@@ -4,10 +4,10 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
 import db
-from config import BOT_TOKEN
+from config import ADMIN_ID, BOT_TOKEN
 from handlers import admin, profile, registration, start, swipe
 from keyboards import main_menu_kb
 from states import AdminBroadcast, AdminSearch
@@ -15,16 +15,46 @@ from states import AdminBroadcast, AdminSearch
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Bump when deploying — check Railway logs for this line after redeploy.
+BUILD_VERSION = "2025-06-13-seed-fix"
 
-def register_handlers(dp: Dispatcher):
-    """Register all handlers. Form/state handlers BEFORE catch-all."""
+DEFAULT_COMMANDS = [
+    BotCommand(command="start", description="Uruchom bota / Start"),
+    BotCommand(command="help", description="Pomoc / Help"),
+]
+
+ADMIN_COMMANDS = [
+    BotCommand(command="admin", description="Panel admina"),
+    BotCommand(command="seed_demo", description="Wgraj 300 profili demo"),
+    BotCommand(command="seed_status", description="Ile profili demo w bazie"),
+    BotCommand(command="stats", description="Statystyki bota"),
+]
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    await bot.set_my_commands(DEFAULT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
+    if ADMIN_ID:
+        await bot.set_my_commands(
+            DEFAULT_COMMANDS + ADMIN_COMMANDS,
+            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+        )
+        logger.info("Admin command menu set for ADMIN_ID=%s", ADMIN_ID)
+
+
+def register_handlers(dp: Dispatcher) -> None:
+    """Register handlers. Admin commands FIRST; catch-all skips /commands."""
+    admin.register(dp)
+    logger.info(
+        "Admin handlers registered: /admin /seed_demo /seed_status /stats (build %s)",
+        BUILD_VERSION,
+    )
+
     start.register(dp)
     registration.register(dp)
     swipe.register(dp)
     profile.register(dp)
-    admin.register(dp)
 
-    @dp.message(F.text)
+    @dp.message(F.text, ~F.text.startswith("/"))
     async def unknown_text(message: Message, state: FSMContext):
         current = await state.get_state()
         if current in (
@@ -56,8 +86,13 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     register_handlers(dp)
+    await setup_bot_commands(bot)
 
-    logger.info("CursorRandka bot started!")
+    logger.info(
+        "CursorRandka bot started! build=%s admin_id=%s",
+        BUILD_VERSION,
+        ADMIN_ID or "not set",
+    )
     await dp.start_polling(bot)
 
 
