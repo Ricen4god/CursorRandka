@@ -9,6 +9,7 @@ from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommand
 import db
 from config import ADMIN_ID, BOT_TOKEN
 from handlers import admin, profile, registration, start, swipe
+from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
 from keyboards import main_menu_kb
 from states import AdminBroadcast, AdminSearch
 
@@ -16,11 +17,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-13-seed-fix"
+BUILD_VERSION = "2025-06-13-seed-fix-v3"
 
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
     BotCommand(command="help", description="Pomoc / Help"),
+    BotCommand(command="myid", description="Twój Telegram ID / Ваш ID"),
 ]
 
 ADMIN_COMMANDS = [
@@ -45,7 +47,8 @@ def register_handlers(dp: Dispatcher) -> None:
     """Register handlers. Admin commands FIRST; catch-all skips /commands."""
     admin.register(dp)
     logger.info(
-        "Admin handlers registered: /admin /seed_demo /seed_status /stats (build %s)",
+        "Admin handlers registered: /admin /seed_demo /seed_status /stats /myid "
+        "(aliases: seed demo, /seed demo) (build %s)",
         BUILD_VERSION,
     )
 
@@ -74,6 +77,26 @@ def register_handlers(dp: Dispatcher) -> None:
                 "Nie rozumiem 🤔 Wpisz /start aby rozpocząć!"
             )
 
+    @dp.message(F.text.startswith("/"))
+    async def unknown_command(message: Message, state: FSMContext):
+        current = await state.get_state()
+        if current in (
+            AdminSearch.waiting_query.state,
+            AdminBroadcast.waiting_message.state,
+        ):
+            return
+
+        cmd = (message.text or "").split()[0].split("@")[0].lower()
+        hint = ""
+        if cmd in ("/seed_demo", "/seed", "/seed_status", "/admin"):
+            hint = (
+                "\n\nJeśli jesteś adminem, sprawdź logi Railway: "
+                f"build={BUILD_VERSION}, ADMIN_ID."
+            )
+        await message.answer(
+            f"Nieznana komenda: {cmd}{hint}\n\nWpisz /help"
+        )
+
 
 async def main():
     if not BOT_TOKEN:
@@ -92,6 +115,12 @@ async def main():
         "CursorRandka bot started! build=%s admin_id=%s",
         BUILD_VERSION,
         ADMIN_ID or "not set",
+    )
+    logger.info(
+        "seed_data: dir=%s photos.json=%s genders.json=%s",
+        SEED_DATA_DIR,
+        PHOTOS_JSON.is_file(),
+        GENDERS_JSON.is_file(),
     )
     await dp.start_polling(bot)
 

@@ -1,9 +1,10 @@
 import asyncio
 import logging
+import traceback
 from functools import wraps
 
 from aiogram import Dispatcher, F
-from aiogram.filters import Command
+from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
@@ -13,6 +14,16 @@ from aiogram.types import (
 )
 
 import db
+from config import DB_PATH
+from seed_logic import (
+    CITIES,
+    PERSONA_COUNT,
+    SEED_DATA_DIR,
+    TEST_ID_END,
+    TEST_ID_START,
+    count_test_users,
+    seed_all_profiles,
+)
 from states import AdminBroadcast, AdminSearch
 from utils import GENDER_LABEL, LOOKING_LABEL
 
@@ -34,21 +45,66 @@ def admin_only(func):
         if not is_admin(user_id):
             if isinstance(event, CallbackQuery):
                 await event.answer("Доступ запрещён", show_alert=True)
+            elif isinstance(event, Message):
+                await _deny_not_admin(event)
             return None
         return await func(event, *args, **kwargs)
 
     return wrapper
 
 
+def _matches_seed_demo_text(text: str | None) -> bool:
+    """Match /seed_demo, /seed demo, seed demo (any case, extra spaces)."""
+    if not text:
+        return False
+    raw = text.strip()
+    if "@" in raw:
+        raw = raw.split("@", 1)[0].strip()
+    if raw.startswith("/"):
+        raw = raw[1:].strip()
+    compact = " ".join(raw.lower().replace("_", " ").split())
+    return compact == "seed demo"
+
+
+class SeedDemoTrigger(BaseFilter):
+    async def __call__(self, message: Message) -> bool:
+        return _matches_seed_demo_text(message.text)
+
+
+async def _deny_not_admin(message: Message) -> None:
+    user_id = message.from_user.id
+    logger.info(
+        "admin access denied: user_id=%s text=%r",
+        user_id,
+        message.text,
+    )
+    await message.answer(
+        f"🚫 Доступ запрещён. Ваш ID: {user_id}\n"
+        "Проверьте, что ADMIN_ID в Railway Variables совпадает с вашим ID.\n"
+        "Отправьте /myid чтобы узнать свой Telegram ID."
+    )
+
+
 def admin_only_command(func):
     @wraps(func)
     async def wrapper(message: Message, *args, **kwargs):
         if not is_admin(message.from_user.id):
-            await message.answer("🚫 Доступ запрещён.")
+            await _deny_not_admin(message)
             return None
         return await func(message, *args, **kwargs)
 
     return wrapper
+
+
+def _log_admin_message(message: Message, tag: str) -> None:
+    logger.info(
+        "admin %s: user_id=%s username=%s text=%r is_admin=%s",
+        tag,
+        message.from_user.id,
+        message.from_user.username,
+        message.text,
+        is_admin(message.from_user.id),
+    )
 
 
 async def _log(admin_id: int, action: str, target_id: int | None = None, details: str | None = None):
@@ -289,6 +345,143 @@ async def _show_user_card(
 
 
 def register(dp: Dispatcher):
+    @dp.message(Command("myid"))
+    async def cmd_myid(message: Message):
+        user = message.from_user
+        admin_flag = "✅ вы админ" if is_admin(user.id) else "❌ не админ"
+        await message.answer(
+            f"🆔 Ваш Telegram ID: <code>{user.id}</code>\n"
+            f"Username: @{user.username or '—'}\n"
+            f"Статус: {admin_flag}\n\n"
+            "Сравните ID с переменной ADMIN_ID в Railway Variables.",
+            parse_mode="HTML",
+        )
+
+    async def _run_seed_demo(message: Message):
+        _log_admin_message(message, "seed_demo")
+        if not is_admin(message.from_user.id):
+            await _deny_not_admin(message)
+            return
+
+        await message.answer(
+            "⏳ Ładowanie profili demo… / Загрузка демо-профилей…"
+        )
+        try:
+            result = await asyncio.to_thread(seed_all_profiles, DB_PATH)
+            stats = result["stats"]
+            cities_ok = sum(
+                1 for c in CITIES if stats["by_city"].get(c, 0) == PERSONA_COUNT
+            )
+
+            await _log(
+                message.from_user.id,
+                "seed_demo",
+                details=(
+                    f"removed={result['removed']}, seeded={result['seeded']}, "
+                    f"in_db={stats['total']}"
+                ),
+            )
+            await message.answer(
+                "✅ <b>Profili demo gotowe!</b> / Демо-профили загружены.\n\n"
+                f"Usunięto starych / Удалено: {result['removed']}\n"
+                f"Dodano / Создано: {result['seeded']} "
+                f"(ID {TEST_ID_START}–{TEST_ID_END})\n"
+                f"W bazie / В БД: <b>{stats['total']}/{stats['expected']}</b>\n"
+                f"Aktywnych / Активных: {stats['active']}\n"
+                f"Ze zdjęciem / С фото: {stats['with_photo']}\n"
+                f"Miasta {PERSONA_COUNT}/{PERSONA_COUNT} / Города: {cities_ok}/{len(CITIES)}\n"
+                f"photos.json: {result['photos_count']} osób\n\n"
+                "🔎 <b>Przeglądaj</b> — ustaw «🔍 Szukam w» na np. "
+                "<b>Warszawa</b> (⚙️ Ustawienia).\n"
+                "Wiek demo: 18–22 lat (±2 od Twojego wieku).\n\n"
+                "Sprawdź: /seed_status",
+                parse_mode="HTML",
+            )
+        except FileNotFoundError as exc:
+            await message.answer(
+                f"❌ Brak pliku / Файл не найден:\n{exc}\n\n"
+                f"seed_data: {SEED_DATA_DIR}\n"
+                "Wgraj na GitHub: seed_data/genders.json + photos.json + main.py"
+            )
+        except ValueError as exc:
+            await message.answer(
+                f"❌ Błąd danych / Ошибка данных:\n{exc}\n\n"
+                "photos.json musi być z tego samego BOT_TOKEN co Railway.\n"
+                "Uruchom lokalnie: python upload_test_photos.py"
+            )
+        except Exception as exc:
+            logger.exception("seed_demo failed")
+            tb = traceback.format_exc()
+            tail = tb[-1500:] if len(tb) > 1500 else tb
+            await message.answer(
+                f"❌ Błąd / Ошибка seed_demo: {exc}\n\n"
+                f"DB: {DB_PATH}\n"
+                f"seed_data: {SEED_DATA_DIR}\n\n"
+                f"<pre>{tail}</pre>",
+                parse_mode="HTML",
+            )
+
+    @dp.message(Command("seed_demo"))
+    @dp.message(Command("seed", "demo"))
+    @dp.message(SeedDemoTrigger())
+    async def cmd_seed_demo(message: Message):
+        await _run_seed_demo(message)
+
+    @dp.message(Command("seed_status"))
+    @admin_only_command
+    async def cmd_seed_status(message: Message):
+        try:
+            stats = count_test_users(DB_PATH)
+            if stats["total"] == 0:
+                await message.answer(
+                    "📭 Brak profili demo w bazie (910001–910300).\n"
+                    "Нет демо-профилей в БД.\n\n"
+                    "Uruchom /seed_demo po deploy seed_data/ + main.py"
+                )
+                return
+
+            gender_lines = ", ".join(
+                f"{g}={n}" for g, n in sorted(stats["by_gender"].items())
+            )
+            city_lines = []
+            for city in CITIES:
+                cnt = stats["by_city"].get(city, 0)
+                mark = "✓" if cnt == PERSONA_COUNT else "⚠"
+                city_lines.append(f"  {mark} {city}: {cnt}")
+
+            admin_user = await db.get_user(message.from_user.id)
+            browse_hint = ""
+            if admin_user:
+                search = db.user_search_city(admin_user)
+                in_city = stats["by_city"].get(search, 0)
+                diag = await db.diagnose_candidates(message.from_user.id)
+                browse_hint = (
+                    f"\n\n🔍 Ваш «Szukam w»: {search or '—'}\n"
+                    f"Демо в этом городе: {in_city}\n"
+                    f"Кандидатов для вас: {diag.get('after_views_filter', 0)} "
+                    f"(возраст {diag.get('age_range', ('?', '?'))[0]}–"
+                    f"{diag.get('age_range', ('?', '?'))[1]})"
+                )
+                if in_city == 0 and search:
+                    browse_hint += (
+                        f"\n⚠️ Смените город в ⚙️ Ustawienia → 🔍 Szukam w "
+                        f"(например Opole, Warszawa)."
+                    )
+
+            await message.answer(
+                f"📊 <b>Статус демо-профилей</b>\n\n"
+                f"В БД: <b>{stats['total']}</b> / {stats['expected']}\n"
+                f"Активных: {stats['active']}\n"
+                f"С photo_file_id: {stats['with_photo']}\n"
+                f"Пол: {gender_lines}\n\n"
+                f"<b>По городам:</b>\n" + "\n".join(city_lines)
+                + browse_hint,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.exception("seed_status failed")
+            await message.answer(f"❌ Ошибка /seed_status: {exc}\nDB: {DB_PATH}")
+
     @dp.message(Command("admin"))
     @admin_only_command
     async def cmd_admin(message: Message, state: FSMContext):
