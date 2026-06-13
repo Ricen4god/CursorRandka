@@ -1,0 +1,993 @@
+import asyncio
+import logging
+from functools import wraps
+
+from aiogram import Dispatcher, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+import db
+from states import AdminBroadcast, AdminSearch
+from utils import GENDER_LABEL, LOOKING_LABEL
+
+logger = logging.getLogger(__name__)
+
+USERS_PER_PAGE = 10
+REPORTS_PER_PAGE = 5
+BROADCAST_RATE = 30
+
+
+def is_admin(user_id: int) -> bool:
+    return db.is_admin(user_id)
+
+
+def admin_only(func):
+    @wraps(func)
+    async def wrapper(event, *args, **kwargs):
+        user_id = event.from_user.id
+        if not is_admin(user_id):
+            if isinstance(event, CallbackQuery):
+                await event.answer("Доступ запрещён", show_alert=True)
+            return None
+        return await func(event, *args, **kwargs)
+
+    return wrapper
+
+
+def admin_only_command(func):
+    @wraps(func)
+    async def wrapper(message: Message, *args, **kwargs):
+        if not is_admin(message.from_user.id):
+            await message.answer("🚫 Доступ запрещён.")
+            return None
+        return await func(message, *args, **kwargs)
+
+    return wrapper
+
+
+async def _log(admin_id: int, action: str, target_id: int | None = None, details: str | None = None):
+    await db.log_admin_action(admin_id, action, target_id, details)
+
+
+def _dashboard_kb(pending_reports: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats")],
+            [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm:users:0")],
+            [
+                InlineKeyboardButton(
+                    text=f"🚨 Жалобы ({pending_reports})",
+                    callback_data="adm:reports:0",
+                )
+            ],
+            [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm:broadcast")],
+            [InlineKeyboardButton(text="🔍 Найти юзера", callback_data="adm:search")],
+            [InlineKeyboardButton(text="⬅️ Закрыть", callback_data="adm:close")],
+        ]
+    )
+
+
+def _back_dashboard_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")],
+        ]
+    )
+
+
+def _pagination_kb(prefix: str, page: int, total: int, per_page: int) -> list[InlineKeyboardButton]:
+    buttons = []
+    max_page = max(0, (total - 1) // per_page) if total else 0
+    if page > 0:
+        buttons.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"adm:{prefix}:{page - 1}")
+        )
+    if page < max_page:
+        buttons.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"adm:{prefix}:{page + 1}")
+        )
+    return buttons
+
+
+def _user_actions_kb(user_id: int, user: dict, back: str = "adm:menu") -> InlineKeyboardMarkup:
+    rows = []
+
+    if user.get("is_banned"):
+        rows.append([
+            InlineKeyboardButton(text="✅ Разбанить", callback_data=f"adm:unban:{user_id}")
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(text="🚫 Забанить", callback_data=f"adm:ban:{user_id}")
+        ])
+
+    if user.get("is_shadow_banned"):
+        rows.append([
+            InlineKeyboardButton(
+                text="👻 Снять теневой бан",
+                callback_data=f"adm:shadow_off:{user_id}",
+            )
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="👻 Теневой бан",
+                callback_data=f"adm:shadow_on:{user_id}",
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton(text="📊 Статистика", callback_data=f"adm:ustats:{user_id}"),
+        InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"adm:delete:{user_id}"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=back),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _format_admin_user_card(user: dict) -> str:
+    gender = GENDER_LABEL.get(user["gender"], user["gender"])
+    looking = LOOKING_LABEL.get(user["looking_for"], user["looking_for"])
+    username = f"@{user['username']}" if user.get("username") else "—"
+
+    flags = []
+    if user.get("is_banned"):
+        flags.append("🚫 Забанен")
+    if user.get("is_shadow_banned"):
+        flags.append("👻 Теневой бан")
+    if not user.get("is_active"):
+        flags.append("💤 Профиль на паузе")
+    status = ", ".join(flags) if flags else "🟢 Активен"
+
+    lines = [
+        "👤 Карточка пользователя",
+        "",
+        f"🆔 ID: {user['user_id']}",
+        f"📛 Username: {username}",
+        f"📝 {user['name']}, {user['age']} лет",
+        f"{gender} · ищет: {looking}",
+        f"🏙️ {user['city']}",
+        "",
+        f"💬 {user['bio'] or 'Без описания'}",
+        "",
+        f"📅 Регистрация: {user.get('created_at', '—')}",
+        f"🕐 Последняя активность: {user.get('last_active') or user.get('created_at', '—')}",
+        f"Статус: {status}",
+    ]
+    if user.get("ban_reason"):
+        lines.append(f"📋 Причина бана: {user['ban_reason']}")
+    return "\n".join(lines)
+
+
+def _format_stats_text(stats: dict) -> str:
+    cities_lines = []
+    for i, row in enumerate(stats["top_cities"], 1):
+        cities_lines.append(f"  {i}. {row['city']} — {row['cnt']}")
+
+    cities_block = "\n".join(cities_lines) if cities_lines else "  —"
+
+    return (
+        "📊 <b>Статистика CursorRandka</b>\n\n"
+        f"👥 Всего пользователей: <b>{stats['total_users']}</b>\n"
+        f"🟢 Активны сегодня (24ч): <b>{stats['active_today']}</b>\n"
+        f"✅ Активные профили: <b>{stats['active_profiles']}</b>\n"
+        f"💤 На паузе: <b>{stats['paused_profiles']}</b>\n"
+        f"❤️ Всего лайков: <b>{stats['total_likes']}</b>\n"
+        f"💕 Матчей: <b>{stats['total_matches']}</b>\n"
+        f"🚨 Жалоб (ожидают): <b>{stats['pending_reports']}</b>\n"
+        f"🆕 Регистраций сегодня: <b>{stats['registrations_today']}</b>\n\n"
+        f"🏙️ <b>Топ-5 городов:</b>\n{cities_block}"
+    )
+
+
+async def _send_dashboard(message: Message, edit: bool = False):
+    pending = await db.count_pending_reports()
+    text = (
+        "🛡️ <b>Админ-панель CursorRandka</b>\n\n"
+        f"Ожидают рассмотрения жалоб: <b>{pending}</b>\n"
+        "Выберите раздел:"
+    )
+    kb = _dashboard_kb(pending)
+    if edit:
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _render_reports(callback: CallbackQuery, page: int):
+    reports, total = await db.get_pending_reports(page, REPORTS_PER_PAGE)
+
+    if not reports:
+        text = "🚨 Нет ожидающих жалоб ✅"
+        kb = _back_dashboard_kb()
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb)
+        else:
+            await callback.message.edit_text(text, reply_markup=kb)
+        return
+
+    lines = [f"🚨 <b>Жалобы</b> (стр. {page + 1})\n"]
+    buttons = []
+
+    for r in reports:
+        reporter = r.get("reporter_name") or str(r["reporter_id"])
+        reported = r.get("reported_name") or str(r["reported_id"])
+        lines.append(
+            f"#{r['id']} · {reported} ← {reporter}\n"
+            f"   {r['reason']} · {r['created_at']}"
+        )
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"#{r['id']} — {reported}",
+                callback_data=f"adm:report:{r['id']}:{page}",
+            )
+        ])
+
+    nav = _pagination_kb("reports", page, total, REPORTS_PER_PAGE)
+    if nav:
+        buttons.append(nav)
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")
+    ])
+
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    if callback.message.photo:
+        await callback.message.delete()
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _show_user_card(
+    bot,
+    chat_id: int,
+    user_id: int,
+    back: str = "adm:menu",
+    message: Message | None = None,
+    callback: CallbackQuery | None = None,
+):
+    user = await db.get_user(user_id)
+    if not user:
+        text = f"❌ Пользователь {user_id} не найден."
+        kb = _back_dashboard_kb()
+        if callback and callback.message.photo:
+            await callback.message.delete()
+            await bot.send_message(chat_id, text, reply_markup=kb)
+        elif callback:
+            await callback.message.edit_text(text, reply_markup=kb)
+        elif message:
+            await message.answer(text, reply_markup=kb)
+        return
+
+    caption = _format_admin_user_card(user)
+    kb = _user_actions_kb(user_id, user, back)
+
+    if callback:
+        await callback.message.delete()
+        await bot.send_photo(
+            chat_id,
+            user["photo_file_id"],
+            caption=caption,
+            reply_markup=kb,
+        )
+    elif message:
+        await message.answer_photo(
+            user["photo_file_id"],
+            caption=caption,
+            reply_markup=kb,
+        )
+
+
+def register(dp: Dispatcher):
+    @dp.message(Command("admin"))
+    @admin_only_command
+    async def cmd_admin(message: Message, state: FSMContext):
+        await state.clear()
+        await _send_dashboard(message)
+
+    @dp.message(Command("stats"))
+    @admin_only
+    async def cmd_stats(message: Message):
+        stats = await db.get_admin_stats()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm:stats")],
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")],
+            ]
+        )
+        await message.answer(
+            _format_stats_text(stats),
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+
+    @dp.message(Command("ban"))
+    @admin_only
+    async def cmd_ban(message: Message):
+        parts = message.text.split(maxsplit=2)
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("Использование: /ban <tg_id> [причина]")
+            return
+
+        target_id = int(parts[1])
+        reason = parts[2] if len(parts) > 2 else None
+        user = await db.get_user(target_id)
+        if not user:
+            await message.answer(f"❌ Пользователь {target_id} не найден.")
+            return
+
+        await db.ban_user(target_id, reason=reason, shadow=False)
+        await _log(message.from_user.id, "ban", target_id, reason)
+        await message.answer(
+            f"🚫 Пользователь {target_id} ({user['name']}) забанен."
+            + (f"\nПричина: {reason}" if reason else "")
+        )
+
+        try:
+            await message.bot.send_message(
+                target_id,
+                "🚫 Ваш аккаунт заблокирован администратором.",
+            )
+        except Exception:
+            pass
+
+    @dp.message(Command("unban"))
+    @admin_only
+    async def cmd_unban(message: Message):
+        parts = message.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("Использование: /unban <tg_id>")
+            return
+
+        target_id = int(parts[1])
+        user = await db.get_user(target_id)
+        if not user:
+            await message.answer(f"❌ Пользователь {target_id} не найден.")
+            return
+
+        await db.unban_user(target_id)
+        await _log(message.from_user.id, "unban", target_id)
+        await message.answer(f"✅ Пользователь {target_id} ({user['name']}) разбанен.")
+
+    @dp.message(Command("user"))
+    @admin_only
+    async def cmd_user(message: Message):
+        parts = message.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("Использование: /user <tg_id>")
+            return
+
+        target_id = int(parts[1])
+        await _show_user_card(message.bot, message.chat.id, target_id, message=message)
+
+    @dp.callback_query(F.data == "adm:close")
+    @admin_only
+    async def cb_close(callback: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer()
+        await callback.message.delete()
+
+    @dp.callback_query(F.data == "adm:menu")
+    @admin_only
+    async def cb_menu(callback: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer()
+        pending = await db.count_pending_reports()
+        text = (
+            "🛡️ <b>Админ-панель CursorRandka</b>\n\n"
+            f"Ожидают рассмотрения жалоб: <b>{pending}</b>\n"
+            "Выберите раздел:"
+        )
+        kb = _dashboard_kb(pending)
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data == "adm:stats")
+    @admin_only
+    async def cb_stats(callback: CallbackQuery):
+        await callback.answer("Обновлено")
+        stats = await db.get_admin_stats()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm:stats")],
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")],
+            ]
+        )
+        text = _format_stats_text(stats)
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("adm:users:"))
+    @admin_only
+    async def cb_users(callback: CallbackQuery):
+        await callback.answer()
+        page = int(callback.data.split(":")[2])
+        users, total = await db.get_users_page(page, USERS_PER_PAGE)
+
+        if not users:
+            text = "👥 Пользователи не найдены."
+            kb = _back_dashboard_kb()
+        else:
+            lines = [f"👥 <b>Пользователи</b> (стр. {page + 1})\n"]
+            buttons = []
+            for u in users:
+                flag = ""
+                if u.get("is_banned"):
+                    flag = " 🚫"
+                elif u.get("is_shadow_banned"):
+                    flag = " 👻"
+                elif not u.get("is_active"):
+                    flag = " 💤"
+                lines.append(
+                    f"• {u['name']}, {u['age']} · {u['city']} · ID {u['user_id']}{flag}"
+                )
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=f"{u['name']} ({u['user_id']})",
+                        callback_data=f"adm:user:{u['user_id']}:users:{page}",
+                    )
+                ])
+
+            nav = _pagination_kb("users", page, total, USERS_PER_PAGE)
+            if nav:
+                buttons.append(nav)
+            buttons.append([
+                InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")
+            ])
+            text = "\n".join(lines)
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("adm:user:"))
+    @admin_only
+    async def cb_user_card(callback: CallbackQuery):
+        await callback.answer()
+        parts = callback.data.split(":")
+        user_id = int(parts[2])
+        back = "adm:menu"
+        if len(parts) >= 5 and parts[3] == "users":
+            back = f"adm:users:{parts[4]}"
+        elif len(parts) >= 5 and parts[3] == "reports":
+            back = f"adm:reports:{parts[4]}"
+        await _show_user_card(
+            callback.bot,
+            callback.message.chat.id,
+            user_id,
+            back=back,
+            callback=callback,
+        )
+
+    @dp.callback_query(F.data.startswith("adm:reports:"))
+    @admin_only
+    async def cb_reports(callback: CallbackQuery):
+        await callback.answer()
+        page = int(callback.data.split(":")[2])
+        await _render_reports(callback, page)
+
+    @dp.callback_query(F.data.startswith("adm:report:"))
+    @admin_only
+    async def cb_report_detail(callback: CallbackQuery):
+        await callback.answer()
+        parts = callback.data.split(":")
+        report_id = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+
+        report = await db.get_report(report_id)
+        if not report:
+            await callback.answer("Жалоба не найдена", show_alert=True)
+            return
+
+        reporter = report.get("reporter_name") or report["reporter_id"]
+        reported = report.get("reported_name") or report["reported_id"]
+        text = (
+            f"🚨 <b>Жалоба #{report_id}</b>\n\n"
+            f"👤 Жалоба на: {reported} (ID {report['reported_id']})\n"
+            f"📨 От: {reporter} (ID {report['reporter_id']})\n"
+            f"📋 Причина: {report['reason']}\n"
+            f"📅 Дата: {report['created_at']}"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="👁️ Посмотреть анкету",
+                        callback_data=f"adm:user:{report['reported_id']}:reports:{page}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🚫 Забанить",
+                        callback_data=f"adm:rban:{report_id}:{page}",
+                    ),
+                    InlineKeyboardButton(
+                        text="👻 Теневой бан",
+                        callback_data=f"adm:rshadow:{report_id}:{page}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="✅ Отклонить",
+                        callback_data=f"adm:rdismiss:{report_id}:{page}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ К списку",
+                        callback_data=f"adm:reports:{page}",
+                    )
+                ],
+            ]
+        )
+
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("adm:rban:"))
+    @admin_only
+    async def cb_report_ban(callback: CallbackQuery):
+        parts = callback.data.split(":")
+        report_id = int(parts[2])
+        page = int(parts[3])
+        report = await db.get_report(report_id)
+        if not report:
+            await callback.answer("Жалоба не найдена", show_alert=True)
+            return
+
+        target_id = report["reported_id"]
+        reason = f"Жалоба #{report_id}: {report['reason']}"
+        await db.ban_user(target_id, reason=reason, shadow=False)
+        await db.update_report_status(report_id, "actioned")
+        await _log(callback.from_user.id, "report_ban", target_id, reason)
+
+        await callback.answer("Пользователь забанен")
+        try:
+            await callback.bot.send_message(
+                target_id,
+                "🚫 Ваш аккаунт заблокирован администратором.",
+            )
+        except Exception:
+            pass
+
+        await _render_reports(callback, page)
+
+    @dp.callback_query(F.data.startswith("adm:rshadow:"))
+    @admin_only
+    async def cb_report_shadow(callback: CallbackQuery):
+        parts = callback.data.split(":")
+        report_id = int(parts[2])
+        page = int(parts[3])
+        report = await db.get_report(report_id)
+        if not report:
+            await callback.answer("Жалоба не найдена", show_alert=True)
+            return
+
+        target_id = report["reported_id"]
+        reason = f"Жалоба #{report_id}: {report['reason']}"
+        await db.ban_user(target_id, reason=reason, shadow=True)
+        await db.update_report_status(report_id, "actioned")
+        await _log(callback.from_user.id, "report_shadow_ban", target_id, reason)
+
+        await callback.answer("Теневой бан применён")
+        await _render_reports(callback, page)
+
+    @dp.callback_query(F.data.startswith("adm:rdismiss:"))
+    @admin_only
+    async def cb_report_dismiss(callback: CallbackQuery):
+        parts = callback.data.split(":")
+        report_id = int(parts[2])
+        page = int(parts[3])
+
+        report = await db.get_report(report_id)
+        if not report:
+            await callback.answer("Жалоба не найдена", show_alert=True)
+            return
+
+        await db.update_report_status(report_id, "dismissed")
+        await _log(
+            callback.from_user.id,
+            "report_dismiss",
+            report["reported_id"],
+            f"#{report_id}",
+        )
+
+        await callback.answer("Жалоба отклонена")
+        await _render_reports(callback, page)
+
+    @dp.callback_query(F.data.startswith("adm:ban:"))
+    @admin_only
+    async def cb_ban_user(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await db.ban_user(user_id, shadow=False)
+        await _log(callback.from_user.id, "ban", user_id)
+        await callback.answer("Забанен")
+
+        try:
+            await callback.bot.send_message(
+                user_id,
+                "🚫 Ваш аккаунт заблокирован администратором.",
+            )
+        except Exception:
+            pass
+
+        await _show_user_card(
+            callback.bot,
+            callback.message.chat.id,
+            user_id,
+            callback=callback,
+        )
+
+    @dp.callback_query(F.data.startswith("adm:unban:"))
+    @admin_only
+    async def cb_unban_user(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await db.unban_user(user_id)
+        await _log(callback.from_user.id, "unban", user_id)
+        await callback.answer("Разбанен")
+        await _show_user_card(
+            callback.bot,
+            callback.message.chat.id,
+            user_id,
+            callback=callback,
+        )
+
+    @dp.callback_query(F.data.startswith("adm:shadow_on:"))
+    @admin_only
+    async def cb_shadow_on(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await db.set_shadow_ban(user_id, True)
+        await _log(callback.from_user.id, "shadow_ban", user_id)
+        await callback.answer("Теневой бан включён")
+        await _show_user_card(
+            callback.bot,
+            callback.message.chat.id,
+            user_id,
+            callback=callback,
+        )
+
+    @dp.callback_query(F.data.startswith("adm:shadow_off:"))
+    @admin_only
+    async def cb_shadow_off(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await db.set_shadow_ban(user_id, False)
+        await _log(callback.from_user.id, "shadow_unban", user_id)
+        await callback.answer("Теневой бан снят")
+        await _show_user_card(
+            callback.bot,
+            callback.message.chat.id,
+            user_id,
+            callback=callback,
+        )
+
+    @dp.callback_query(F.data.startswith("adm:delete:"))
+    @admin_only
+    async def cb_delete_user(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await callback.answer()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⚠️ Да, удалить навсегда",
+                        callback_data=f"adm:delok:{user_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отмена",
+                        callback_data=f"adm:user:{user_id}",
+                    )
+                ],
+            ]
+        )
+        warn = (
+            f"⚠️ Удалить аккаунт <b>{user['name']}</b> "
+            f"(<code>{user_id}</code>)?\nЭто действие необратимо!"
+        )
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=warn, reply_markup=kb, parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(warn, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("adm:delok:"))
+    @admin_only
+    async def cb_delete_user_confirm(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        await db.delete_user(user_id)
+        await _log(callback.from_user.id, "delete_user", user_id, user.get("name"))
+        await callback.answer("Удалён")
+
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(
+                f"🗑️ Пользователь {user_id} ({user['name']}) удалён.",
+                reply_markup=_back_dashboard_kb(),
+            )
+        else:
+            await callback.message.edit_text(
+                f"🗑️ Пользователь {user_id} ({user['name']}) удалён.",
+                reply_markup=_back_dashboard_kb(),
+            )
+
+    @dp.callback_query(F.data.startswith("adm:ustats:"))
+    @admin_only
+    async def cb_user_stats(callback: CallbackQuery):
+        user_id = int(callback.data.split(":")[2])
+        stats = await db.get_user_admin_stats(user_id)
+        if not stats:
+            await callback.answer("Не найден", show_alert=True)
+            return
+
+        user = stats["user"]
+        text = (
+            f"📊 <b>Статистика — {user['name']}</b>\n\n"
+            f"👁️ Просмотры: {stats['views_count']}\n"
+            f"❤️ Лайков получено: {stats['likes_received']}\n"
+            f"💌 Лайков отправлено: {stats['likes_given']}\n"
+            f"💕 Матчей: {stats['matches_count']}"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ К карточке",
+                        callback_data=f"adm:user:{user_id}",
+                    )
+                ]
+            ]
+        )
+        await callback.answer()
+        if callback.message.photo:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data == "adm:search")
+    @admin_only
+    async def cb_search_start(callback: CallbackQuery, state: FSMContext):
+        await state.set_state(AdminSearch.waiting_query)
+        await callback.answer()
+        text = (
+            "🔍 <b>Поиск пользователя</b>\n\n"
+            "Отправьте tg_id, @username или имя.\n"
+            "Отмена: /cancel"
+        )
+        kb = _back_dashboard_kb()
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.message(AdminSearch.waiting_query)
+    @admin_only
+    async def search_query(message: Message, state: FSMContext):
+        query = (message.text or "").strip()
+        if query == "/cancel":
+            await state.clear()
+            await message.answer("❌ Поиск отменён.")
+            await _send_dashboard(message)
+            return
+        if not query:
+            await message.answer("Введите запрос для поиска.")
+            return
+
+        await state.clear()
+        results = await db.search_users(query)
+
+        if not results:
+            await message.answer(
+                f"❌ По запросу «{query}» ничего не найдено.",
+                reply_markup=_back_dashboard_kb(),
+            )
+            return
+
+        if len(results) == 1:
+            await _log(message.from_user.id, "search", results[0]["user_id"], query)
+            await _show_user_card(
+                message.bot,
+                message.chat.id,
+                results[0]["user_id"],
+                message=message,
+            )
+            return
+
+        buttons = []
+        lines = [f"🔍 Найдено: {len(results)}\n"]
+        for u in results[:10]:
+            uname = f"@{u['username']}" if u.get("username") else "—"
+            lines.append(
+                f"• {u['name']}, {u['age']} · {u['city']} · ID {u['user_id']} · {uname}"
+            )
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{u['name']} ({u['user_id']})",
+                    callback_data=f"adm:user:{u['user_id']}",
+                )
+            ])
+        buttons.append([
+            InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:menu")
+        ])
+        await _log(message.from_user.id, "search", details=query)
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    @dp.callback_query(F.data == "adm:broadcast")
+    @admin_only
+    async def cb_broadcast_start(callback: CallbackQuery, state: FSMContext):
+        await state.set_state(AdminBroadcast.waiting_message)
+        await callback.answer()
+        text = (
+            "📢 <b>Рассылка</b>\n\n"
+            "Отправьте текст сообщения для всех активных пользователей.\n"
+            "Отмена: /cancel"
+        )
+        kb = _back_dashboard_kb()
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.message(AdminBroadcast.waiting_message)
+    @admin_only
+    async def broadcast_message(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if text == "/cancel":
+            await state.clear()
+            await message.answer("❌ Рассылка отменена.")
+            await _send_dashboard(message)
+            return
+        if not text:
+            await message.answer("Отправьте текстовое сообщение.")
+            return
+
+        user_ids = await db.get_broadcast_user_ids()
+        count = len(user_ids)
+        await state.update_data(broadcast_text=text)
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Отправить",
+                        callback_data="adm:broadcast:confirm",
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ Отмена",
+                        callback_data="adm:broadcast:cancel",
+                    ),
+                ]
+            ]
+        )
+        preview = (
+            f"📢 <b>Предпросмотр рассылки</b>\n\n"
+            f"{text}\n\n"
+            f"Отправить <b>{count}</b> пользователям?"
+        )
+        await message.answer(preview, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data == "adm:broadcast:cancel")
+    @admin_only
+    async def cb_broadcast_cancel(callback: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer("Отменено")
+        pending = await db.count_pending_reports()
+        text = (
+            "🛡️ <b>Админ-панель CursorRandka</b>\n\n"
+            f"Ожидают рассмотрения жалоб: <b>{pending}</b>\n"
+            "Выберите раздел:"
+        )
+        kb = _dashboard_kb(pending)
+        if callback.message.photo:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    @dp.callback_query(F.data == "adm:broadcast:confirm")
+    @admin_only
+    async def cb_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        text = data.get("broadcast_text")
+        if not text:
+            await callback.answer("Сообщение не найдено", show_alert=True)
+            return
+
+        await state.clear()
+        await callback.answer("Рассылка запущена…")
+
+        user_ids = await db.get_broadcast_user_ids()
+        sent = 0
+        failed = 0
+
+        status_msg = await callback.message.edit_text(
+            f"📢 Рассылка… 0/{len(user_ids)}",
+            reply_markup=None,
+        )
+
+        for i, uid in enumerate(user_ids, 1):
+            try:
+                await callback.bot.send_message(uid, text)
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                logger.debug("Broadcast failed for %s: %s", uid, exc)
+
+            if i % BROADCAST_RATE == 0:
+                await status_msg.edit_text(f"📢 Рассылка… {i}/{len(user_ids)}")
+                await asyncio.sleep(1)
+
+        await _log(
+            callback.from_user.id,
+            "broadcast",
+            details=f"sent={sent}, failed={failed}",
+        )
+
+        result = (
+            f"📢 <b>Рассылка завершена</b>\n\n"
+            f"✅ Отправлено: {sent}\n"
+            f"❌ Ошибок: {failed}"
+        )
+        await status_msg.edit_text(
+            result,
+            reply_markup=_back_dashboard_kb(),
+            parse_mode="HTML",
+        )
