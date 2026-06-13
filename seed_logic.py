@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from pathlib import Path
 
@@ -150,25 +151,42 @@ def _username(name: str, user_id: int) -> str:
     return f"demo_{slug}_{user_id}"
 
 
+def _shuffled_photo_keys(city: str) -> list[str]:
+    """Return photo keys 1..20 shuffled deterministically per city."""
+    keys = [str(i) for i in range(1, PERSONA_COUNT + 1)]
+    random.Random(city).shuffle(keys)
+    return keys
+
+
 def build_test_users(
     genders: dict[str, dict] | None = None,
     photos: dict[str, str] | None = None,
 ) -> list[dict]:
+    """Build 20 profiles per city; each city gets all 20 photos exactly once.
+
+    Persona slots 1–20 supply name/gender/age from genders.json.
+    Photos are shuffled per city (deterministic by city name) so browsing
+    one city never shows the same photo twice; photos may repeat across cities.
+    """
     gender_map = genders or load_genders()
     photo_map = photos or load_photos()
     users: list[dict] = []
 
-    for persona in range(1, PERSONA_COUNT + 1):
-        key = str(persona)
-        persona_data = gender_map[key]
-        gender = persona_data["gender"]
-        looking_for = persona_data["looking_for"]
-        name = persona_data["name"]
-        age = int(persona_data["age"])
-        photo_file_id = photo_map[key]
+    for city_index, city in enumerate(CITIES):
+        shuffled_photo_keys = _shuffled_photo_keys(city)
+        city_photo_ids: list[str] = []
 
-        for city_index, city in enumerate(CITIES):
-            user_id = persona_user_id(persona, city_index)
+        for slot in range(1, PERSONA_COUNT + 1):
+            persona_key = str(slot)
+            persona_data = gender_map[persona_key]
+            gender = persona_data["gender"]
+            looking_for = persona_data["looking_for"]
+            name = persona_data["name"]
+            age = int(persona_data["age"])
+            photo_file_id = photo_map[shuffled_photo_keys[slot - 1]]
+            city_photo_ids.append(photo_file_id)
+
+            user_id = persona_user_id(slot, city_index)
             users.append(
                 {
                     "user_id": user_id,
@@ -179,10 +197,15 @@ def build_test_users(
                     "looking_for": looking_for,
                     "city": city,
                     "search_city": city,
-                    "bio": _bio_for(gender, persona, city),
+                    "bio": _bio_for(gender, slot, city),
                     "photo_file_id": photo_file_id,
-                    "persona": persona,
+                    "persona": slot,
                 }
+            )
+
+        if len(city_photo_ids) != len(set(city_photo_ids)):
+            raise ValueError(
+                f"Duplicate photo assignment in {city} — check photos.json"
             )
 
     return users
@@ -321,6 +344,22 @@ def get_test_users_stats(db_path: str) -> dict:
             ).fetchall()
         }
 
+        unique_photos_by_city = {
+            row[0]: row[1]
+            for row in conn.execute(
+                """SELECT city, COUNT(DISTINCT photo_file_id) FROM users
+                   WHERE user_id BETWEEN ? AND ?
+                   GROUP BY city""",
+                (TEST_ID_START, TEST_ID_END),
+            ).fetchall()
+        }
+
+        cities_with_duplicate_photos = [
+            city
+            for city in CITIES
+            if unique_photos_by_city.get(city, 0) < by_city.get(city, 0)
+        ]
+
         return {
             "total": total,
             "expected": (TEST_ID_END - TEST_ID_START + 1),
@@ -328,6 +367,8 @@ def get_test_users_stats(db_path: str) -> dict:
             "with_photo": with_photo,
             "by_city": by_city,
             "by_gender": by_gender,
+            "unique_photos_by_city": unique_photos_by_city,
+            "cities_with_duplicate_photos": cities_with_duplicate_photos,
             "seed_data_dir": str(SEED_DATA_DIR),
             "photos_json": str(PHOTOS_JSON),
             "genders_json": str(GENDERS_JSON),
@@ -353,6 +394,16 @@ def format_test_users_report(stats: dict) -> str:
             lines.append(f"… и ещё {len(missing_cities) - 5}")
     elif stats["total"] == stats["expected"]:
         lines.append(f"Все {len(CITIES)} городов по {PERSONA_COUNT} профилей ✅")
+    dup_photo_cities = stats.get("cities_with_duplicate_photos") or []
+    if dup_photo_cities:
+        lines.append(
+            "Города с повторяющимися фото: "
+            f"{', '.join(dup_photo_cities[:5])}"
+        )
+    elif stats["total"] == stats["expected"]:
+        lines.append(
+            f"Уникальные фото в каждом городе: {PERSONA_COUNT}/{PERSONA_COUNT} ✅"
+        )
     lines.append(f"seed_data: {stats['seed_data_dir']}")
     return "\n".join(lines)
 

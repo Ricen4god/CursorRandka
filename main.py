@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-13-seed-fix-v3"
+BUILD_VERSION = "2025-06-13-seed-fix-v7"
 
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
@@ -116,12 +116,22 @@ async def main():
         BUILD_VERSION,
         ADMIN_ID or "not set",
     )
-    logger.info(
-        "seed_data: dir=%s photos.json=%s genders.json=%s",
-        SEED_DATA_DIR,
-        PHOTOS_JSON.is_file(),
-        GENDERS_JSON.is_file(),
-    )
+    seed_ok = SEED_DATA_DIR.is_dir() and PHOTOS_JSON.is_file() and GENDERS_JSON.is_file()
+    if seed_ok:
+        logger.info(
+            "seed_data OK: dir=%s photos.json=True genders.json=True",
+            SEED_DATA_DIR,
+        )
+    else:
+        logger.warning(
+            "seed_data MISSING on container — /seed_demo will fail until you push "
+            "seed_data/genders.json + seed_data/photos.json to GitHub and redeploy. "
+            "dir_exists=%s photos.json=%s genders.json=%s path=%s",
+            SEED_DATA_DIR.is_dir(),
+            PHOTOS_JSON.is_file(),
+            GENDERS_JSON.is_file(),
+            SEED_DATA_DIR,
+        )
     await dp.start_polling(bot)
 
 
