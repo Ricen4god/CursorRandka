@@ -3,7 +3,7 @@ import logging
 import traceback
 from functools import wraps
 
-from aiogram import Dispatcher, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -390,6 +390,8 @@ def register(dp: Dispatcher):
                 f"Aktywnych / Активных: {stats['active']}\n"
                 f"Ze zdjęciem / С фото: {stats['with_photo']}\n"
                 f"Miasta {PERSONA_COUNT}/{PERSONA_COUNT} / Города: {cities_ok}/{len(CITIES)}\n"
+                f"Unikalne zdjęcia / Уник. фото: "
+                f"{PERSONA_COUNT} na miasto / в городе ✅\n"
                 f"photos.json: {result['photos_count']} osób\n\n"
                 "🔎 <b>Przeglądaj</b> — ustaw «🔍 Szukam w» na np. "
                 "<b>Warszawa</b> (⚙️ Ustawienia).\n"
@@ -400,8 +402,11 @@ def register(dp: Dispatcher):
         except FileNotFoundError as exc:
             await message.answer(
                 f"❌ Brak pliku / Файл не найден:\n{exc}\n\n"
-                f"seed_data: {SEED_DATA_DIR}\n"
-                "Wgraj na GitHub: seed_data/genders.json + photos.json + main.py"
+                f"Oczekiwana ścieżka / Ожидаемый путь: {SEED_DATA_DIR}/\n\n"
+                "Na GitHub musi być FOLDER seed_data/ (nie pliki w korzeniu repo):\n"
+                "  seed_data/genders.json\n"
+                "  seed_data/photos.json\n"
+                "Potem: push → redeploy Railway → /seed_demo"
             )
         except ValueError as exc:
             await message.answer(
@@ -444,10 +449,26 @@ def register(dp: Dispatcher):
                 f"{g}={n}" for g, n in sorted(stats["by_gender"].items())
             )
             city_lines = []
+            unique_photos = stats.get("unique_photos_by_city") or {}
             for city in CITIES:
                 cnt = stats["by_city"].get(city, 0)
+                uniq = unique_photos.get(city, 0)
                 mark = "✓" if cnt == PERSONA_COUNT else "⚠"
-                city_lines.append(f"  {mark} {city}: {cnt}")
+                photo_note = ""
+                if cnt and uniq < cnt:
+                    photo_note = f" ({uniq} unikalnych zdjęć ⚠)"
+                elif cnt == PERSONA_COUNT and uniq == PERSONA_COUNT:
+                    photo_note = " (20 unikalnych zdjęć ✓)"
+                city_lines.append(f"  {mark} {city}: {cnt}{photo_note}")
+
+            dup_cities = stats.get("cities_with_duplicate_photos") or []
+            photo_warning = ""
+            if dup_cities:
+                photo_warning = (
+                    "\n\n⚠️ Powtarzające się zdjęcia w miastach / Дубли фото: "
+                    f"{', '.join(dup_cities[:5])}\n"
+                    "Uruchom /seed_demo ponownie po deploy."
+                )
 
             admin_user = await db.get_user(message.from_user.id)
             browse_hint = ""
@@ -474,7 +495,8 @@ def register(dp: Dispatcher):
                 f"Активных: {stats['active']}\n"
                 f"С photo_file_id: {stats['with_photo']}\n"
                 f"Пол: {gender_lines}\n\n"
-                f"<b>По городам:</b>\n" + "\n".join(city_lines)
+                f"<b>По городам:</b>\n"                 + "\n".join(city_lines)
+                + photo_warning
                 + browse_hint,
                 parse_mode="HTML",
             )
@@ -551,6 +573,35 @@ def register(dp: Dispatcher):
         await db.unban_user(target_id)
         await _log(message.from_user.id, "unban", target_id)
         await message.answer(f"✅ Пользователь {target_id} ({user['name']}) разбанен.")
+
+    @dp.message(Command("givepremium"))
+    @admin_only
+    async def cmd_givepremium(message: Message, bot: Bot):
+        parts = message.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("Использование: /givepremium <tg_id> [dni=30]")
+            return
+
+        target_id = int(parts[1])
+        days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+        user = await db.get_user(target_id)
+        if not user:
+            await message.answer(f"❌ Пользователь {target_id} не найден.")
+            return
+
+        until = await db.activate_premium(target_id, days)
+        await _log(message.from_user.id, "givepremium", target_id, f"{days}d until {until}")
+        await message.answer(
+            f"⭐ Premium выдан {target_id} ({user['name']}) на {days} дн. до {until[:10]}"
+        )
+        try:
+            await bot.send_message(
+                target_id,
+                f"⭐ Admin włączył Ci Premium do <b>{until[:10]}</b>!",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
     @dp.message(Command("user"))
     @admin_only

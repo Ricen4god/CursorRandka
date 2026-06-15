@@ -5,6 +5,7 @@ from aiogram.types import Message
 import db
 from db import user_search_city
 from keyboards import blocked_list_kb, main_menu_kb, profile_menu_kb, settings_kb
+from premium import is_premium_active
 from states import ProfileEdit
 from utils import format_profile
 
@@ -167,14 +168,35 @@ def register(dp: Dispatcher):
             return
         likes_today = await db.get_daily_likes_count(message.from_user.id)
         from config import DAILY_LIKE_LIMIT
+        from premium import daily_like_limit_for
+
+        limit = daily_like_limit_for(user)
+        likes_line = (
+            f"📅 Polubienia dziś: {likes_today}/∞ (Premium ⭐)"
+            if limit is None
+            else f"📅 Polubienia dziś: {likes_today}/{DAILY_LIKE_LIMIT}"
+        )
+        lines = [
+            f"📊 Twoje statystyki:\n",
+            f"👁️ Wyświetlenia profilu: {user['views_count']}",
+            f"❤️ Otrzymane polubienia: {user['likes_received']}",
+            f"💕 Sympatie: {len(await db.get_matches(message.from_user.id))}",
+            likes_line,
+            f"🔍 Szukam w: {user_search_city(user)}",
+        ]
+        if is_premium_active(user):
+            views_7d = await db.get_views_last_7_days(message.from_user.id)
+            likers = len(await db.get_likers(message.from_user.id))
+            lines += [
+                "",
+                "⭐ <b>Premium:</b>",
+                f"👁️ Wyświetlenia (7 dni): {views_7d}",
+                f"💖 Kto Cię polubił (teraz): {likers}",
+            ]
 
         await message.answer(
-            f"📊 Twoje statystyki:\n\n"
-            f"👁️ Wyświetlenia profilu: {user['views_count']}\n"
-            f"❤️ Otrzymane polubienia: {user['likes_received']}\n"
-            f"💕 Sympatie: {len(await db.get_matches(message.from_user.id))}\n"
-            f"📅 Polubienia dziś: {likes_today}/{DAILY_LIKE_LIMIT}\n"
-            f"🔍 Szukam w: {user_search_city(user)}",
+            "\n".join(lines),
+            parse_mode="HTML",
             reply_markup=profile_menu_kb(),
         )
 

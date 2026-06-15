@@ -7,8 +7,9 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 from db import user_search_city
-from config import AGE_RANGE, DAILY_LIKE_LIMIT
+from config import FEED_RESET_HOURS
 from keyboards import main_menu_kb, report_reasons_kb, swipe_kb
+from premium import age_range_for, is_premium_active
 from states import DirectMessage, Report
 from utils import contact_link, format_match_text, format_profile
 
@@ -59,10 +60,17 @@ def _empty_browse_hint(user: dict | None, diag: dict) -> str:
     elif diag.get("no_gender_matches"):
         lines.append("Brak profili pasujących do Twoich preferencji płci.")
     elif diag.get("all_viewed"):
-        lines.append("Obejrzałeś/aś już wszystkich w okolicy — wróć później!")
+        if diag.get("in_nearby_mode"):
+            hours = int(FEED_RESET_HOURS) if FEED_RESET_HOURS == int(FEED_RESET_HOURS) else FEED_RESET_HOURS
+            lines.append(
+                f"Obejrzałeś/aś już wszystkich w pobliskich miastach — "
+                f"za ~{hours} h wrócisz do profili z {search or 'Twojego miasta'}."
+            )
+        else:
+            lines.append("Obejrzałeś/aś już wszystkich w okolicy — wróć później!")
     else:
         lines.append(
-            f"Sprawdź «🔍 Szukam w» i wiek (±{AGE_RANGE} lata, teraz szukasz {min_age}–{max_age})."
+            f"Sprawdź «🔍 Szukam w» i wiek (±{age_range_for(user)} lat, teraz szukasz {min_age}–{max_age})."
         )
         lines.append("Ustawienia: ⚙️ Ustawienia → 🔍 Szukam w")
 
@@ -74,26 +82,31 @@ async def _show_candidate(message: Message, user_id: int, *, delay: bool = False
         await asyncio.sleep(CARD_DELAY_SEC)
 
     user = await db.get_user(user_id)
-    candidates = await db.get_candidates(user_id, limit=1)
+    candidates, feed_notice = await db.get_candidates(user_id, limit=1)
+    if feed_notice:
+        await message.answer(feed_notice)
     if not candidates:
         diag = await db.diagnose_candidates(user_id)
         hint = _empty_browse_hint(user, diag)
-        await message.answer(hint, reply_markup=main_menu_kb())
+        premium = is_premium_active(user)
+        await message.answer(hint, reply_markup=main_menu_kb(is_premium=premium))
         return
 
     cand = candidates[0]
     await db.record_view(user_id, cand["user_id"])
 
+    premium = is_premium_active(user)
     caption = format_profile(cand)
     photo_id = (cand.get("photo_file_id") or "").strip()
+    kb = swipe_kb(cand["user_id"], is_premium=premium)
     if photo_id:
         await message.answer_photo(
             photo_id,
             caption=caption,
-            reply_markup=swipe_kb(cand["user_id"]),
+            reply_markup=kb,
         )
     else:
-        await message.answer(caption, reply_markup=swipe_kb(cand["user_id"]))
+        await message.answer(caption, reply_markup=kb)
 
 
 async def _notify_match(bot: Bot, user_id: int, partner: dict):
@@ -149,11 +162,14 @@ def register(dp: Dispatcher):
             await callback.answer(COOLDOWN_MSG, show_alert=True)
             return
 
+        candidate_id = int(callback.data.split(":")[1])
+
         async with lock:
             if _on_cooldown(user_id):
                 await callback.answer(COOLDOWN_MSG, show_alert=True)
                 return
             _mark_swipe(user_id)
+            await db.record_skip(user_id, candidate_id)
             await callback.answer("Pominięto")
             await _safe_delete(callback.message)
             await _show_candidate(callback.message, user_id, delay=True)
@@ -173,12 +189,19 @@ def register(dp: Dispatcher):
                 await callback.answer(COOLDOWN_MSG, show_alert=True)
                 return
 
-            count = await db.get_daily_likes_count(user_id)
-            if count >= DAILY_LIKE_LIMIT:
-                await callback.answer(
-                    f"Limit {DAILY_LIKE_LIMIT} polubień na dziś! Wróć jutro 😊",
-                    show_alert=True,
+            allowed, limit = await db.can_like_today(user_id)
+            if not allowed:
+                msg = (
+                    f"Limit {limit} polubień na dziś! Wróć jutro 😊"
+                    if limit
+                    else "Limit polubień na dziś!"
                 )
+                hint = (
+                    "\n\n⭐ Premium = nielimitowane polubienia!"
+                    if limit
+                    else ""
+                )
+                await callback.answer(f"{msg}{hint}", show_alert=True)
                 return
 
             ok = await db.increment_daily_likes(user_id)
@@ -200,7 +223,77 @@ def register(dp: Dispatcher):
                 await _safe_delete(callback.message)
                 await _show_candidate(callback.message, user_id, delay=True)
 
-    @dp.callback_query(F.data.startswith("write:"))
+    @dp.callback_query(F.data.startswith("superlike:"))
+    async def cb_superlike(callback: CallbackQuery, bot: Bot):
+        user_id = callback.from_user.id
+        user = await db.get_user(user_id)
+        if not is_premium_active(user):
+            await callback.answer("Tylko Premium ⭐", show_alert=True)
+            return
+
+        lock = _user_lock(user_id)
+        if lock.locked():
+            await callback.answer(COOLDOWN_MSG, show_alert=True)
+            return
+
+        candidate_id = int(callback.data.split(":")[1])
+
+        async with lock:
+            if _on_cooldown(user_id):
+                await callback.answer(COOLDOWN_MSG, show_alert=True)
+                return
+
+            if await db.get_daily_superlikes_count(user_id) >= 1:
+                await callback.answer(
+                    "Super polubienie: 1× dziennie! Wróć jutro ⭐",
+                    show_alert=True,
+                )
+                return
+
+            allowed, limit = await db.can_like_today(user_id)
+            if not allowed:
+                await callback.answer(
+                    f"Limit {limit} polubień na dziś!",
+                    show_alert=True,
+                )
+                return
+
+            if not await db.increment_daily_superlikes(user_id):
+                await callback.answer("Limit super polubień!", show_alert=True)
+                return
+
+            if not await db.increment_daily_likes(user_id):
+                await callback.answer("Limit polubień na dziś!", show_alert=True)
+                return
+
+            _mark_swipe(user_id)
+            matched = await db.add_like(user_id, candidate_id)
+            await callback.answer("⭐ Super polubienie!")
+
+            me = await db.get_user(user_id)
+            if me and not matched:
+                try:
+                    await bot.send_photo(
+                        candidate_id,
+                        me["photo_file_id"],
+                        caption=(
+                            "⭐ <b>Super polubienie!</b> Ktoś naprawdę Cię lubi!\n\n"
+                            f"{me['name']}, {me['age']} lat · {me['city']}\n\n"
+                            "Wejdź w 🔎 Przeglądaj!"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+            if matched:
+                partner = await db.get_user(candidate_id)
+                await _safe_delete(callback.message)
+                await _notify_match(bot, user_id, partner)
+                await _notify_match(bot, candidate_id, me)
+            else:
+                await _safe_delete(callback.message)
+                await _show_candidate(callback.message, user_id, delay=True)
     async def cb_write(callback: CallbackQuery, state: FSMContext):
         candidate_id = int(callback.data.split(":")[1])
         await state.set_state(DirectMessage.waiting_message)
@@ -225,12 +318,14 @@ def register(dp: Dispatcher):
             await message.answer("Wiadomość: 1–300 znaków ✏️")
             return
 
-        count = await db.get_daily_likes_count(message.from_user.id)
-        if count >= DAILY_LIKE_LIMIT:
+        allowed, limit = await db.can_like_today(message.from_user.id)
+        if not allowed:
             await state.clear()
             await message.answer(
-                f"Limit {DAILY_LIKE_LIMIT} polubień na dziś!",
-                reply_markup=main_menu_kb(),
+                f"Limit {limit} polubień na dziś!",
+                reply_markup=main_menu_kb(
+                    is_premium=is_premium_active(await db.get_user(message.from_user.id))
+                ),
             )
             return
 

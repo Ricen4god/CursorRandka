@@ -4,8 +4,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import db
-from config import ADMIN_ID, DISCLAIMER, MIN_AGE
+from config import ADMIN_ID, DISCLAIMER, MIN_AGE, PREMIUM_PRICE_PLN
 from keyboards import main_menu_kb, remove_kb
+from premium import is_premium_active
 from states import AdminBroadcast, AdminSearch, Registration
 
 
@@ -26,7 +27,7 @@ def register(dp: Dispatcher):
                 return
             await message.answer(
                 f"Hej {user['name']}! Gotowy/a na randkę? 💕\n\n{DISCLAIMER}",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(is_premium=is_premium_active(user)),
             )
             return
 
@@ -45,7 +46,7 @@ def register(dp: Dispatcher):
         if not user:
             await message.answer("Najpierw ukończ rejestrację — wpisz /start")
             return
-        await message.answer("Wracamy do menu! 💕", reply_markup=main_menu_kb())
+        await message.answer("Wracamy do menu! 💕", reply_markup=main_menu_kb(is_premium=is_premium_active(user)))
 
     @dp.message(Command("cancel"))
     async def cmd_cancel(message: Message, state: FSMContext):
@@ -78,9 +79,10 @@ def register(dp: Dispatcher):
             "👤 <b>Mój profil</b> — zobacz i edytuj swój profil\n"
             "💕 <b>Sympatie</b> — wzajemne polubienia\n"
             "💤 <b>Uśpij</b> — ukryj profil na jakiś czas\n"
-            "⚙️ <b>Ustawienia</b> — miasto, szukanie, obudź profil\n\n"
+            "⚙️ <b>Ustawienia</b> — miasto, szukanie, obudź profil\n"
+            "⭐ <b>Premium</b> — więcej polubień, kto Cię polubił i więcej\n\n"
             "Możesz szukać osób w dowolnym mieście — ustaw «🔍 Szukam w» w ustawieniach.\n"
             "Np. mieszkasz w Opolu, a przeglądasz profile we Wrocławiu!\n\n"
-            "Limit polubień: 50 dziennie ❤️",
+            f"Limit polubień: 50 dziennie (free) · Premium od {PREMIUM_PRICE_PLN:.2f} zł/mies. ⭐",
             parse_mode="HTML",
         )

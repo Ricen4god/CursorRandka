@@ -1,23 +1,26 @@
 import asyncio
 import logging
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
 import db
-from config import ADMIN_ID, BOT_TOKEN
-from handlers import admin, profile, registration, start, swipe
-from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
+from config import ADMIN_ID, BOT_TOKEN, PUBLIC_URL, WEBHOOK_PORT
+from handlers import admin, premium, profile, registration, start, swipe
 from keyboards import main_menu_kb
+from premium import is_premium_active, stripe_configured
+from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
 from states import AdminBroadcast, AdminSearch
+from stripe_pay import create_webhook_app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-13-seed-fix-v7"
+BUILD_VERSION = "2025-06-13-premium-v10"
 
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
@@ -56,6 +59,7 @@ def register_handlers(dp: Dispatcher) -> None:
     registration.register(dp)
     swipe.register(dp)
     profile.register(dp)
+    premium.register(dp)
 
     @dp.message(F.text, ~F.text.startswith("/"))
     async def unknown_text(message: Message, state: FSMContext):
@@ -70,7 +74,7 @@ def register_handlers(dp: Dispatcher) -> None:
         if user:
             await message.answer(
                 "Nie rozumiem 🤔 Użyj menu poniżej:",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(is_premium=is_premium_active(user)),
             )
         else:
             await message.answer(
@@ -112,9 +116,11 @@ async def main():
     await setup_bot_commands(bot)
 
     logger.info(
-        "CursorRandka bot started! build=%s admin_id=%s",
+        "CursorRandka bot started! build=%s admin_id=%s stripe=%s public_url=%s",
         BUILD_VERSION,
         ADMIN_ID or "not set",
+        "yes" if stripe_configured() else "no",
+        PUBLIC_URL or "not set",
     )
     seed_ok = SEED_DATA_DIR.is_dir() and PHOTOS_JSON.is_file() and GENDERS_JSON.is_file()
     if seed_ok:
@@ -132,6 +138,13 @@ async def main():
             GENDERS_JSON.is_file(),
             SEED_DATA_DIR,
         )
+    webhook_app = create_webhook_app(bot)
+    runner = web.AppRunner(webhook_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
+    await site.start()
+    logger.info("Webhook server on 0.0.0.0:%s (health /health)", WEBHOOK_PORT)
+
     await dp.start_polling(bot)
 
 
