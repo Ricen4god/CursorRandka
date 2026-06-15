@@ -132,6 +132,33 @@ def premium_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def like_notification_kb(liker_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❤️ Lubię też",
+                    callback_data=f"liker_like:{liker_id}",
+                ),
+                InlineKeyboardButton(
+                    text="👎 Pomiń",
+                    callback_data=f"liker_skip:{liker_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⛔ Zablokuj",
+                    callback_data=f"liker_block:{liker_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🚫 Zgłoś",
+                    callback_data=f"report:{liker_id}",
+                ),
+            ],
+        ]
+    )
+
+
 def likers_kb(likers: list[dict]) -> InlineKeyboardMarkup:
     rows = [
         [
