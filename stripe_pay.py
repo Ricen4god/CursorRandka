@@ -24,15 +24,36 @@ if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
 
-async def create_checkout_session(user_id: int) -> str | None:
-    if not stripe_configured():
-        return None
+"""Stripe Checkout + webhook for Premium subscriptions."""
 
+import asyncio
+import logging
+
+import stripe
+from aiohttp import web
+from aiogram import Bot
+
+import db
+from config import (
+    PREMIUM_DAYS,
+    PREMIUM_PRICE_GROSZE,
+    PREMIUM_PRICE_PLN,
+    PUBLIC_URL,
+    STRIPE_PRICE_ID,
+    STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET,
+)
+from premium import stripe_configured
+
+logger = logging.getLogger(__name__)
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+
+
+def _create_checkout_session_sync(user_id: int) -> stripe.checkout.Session:
     success_url = f"{PUBLIC_URL}/pay/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{PUBLIC_URL}/pay/cancel"
-
-    line_items: list[dict]
-    mode = "subscription"
 
     if STRIPE_PRICE_ID:
         line_items = [{"price": STRIPE_PRICE_ID, "quantity": 1}]
@@ -49,8 +70,8 @@ async def create_checkout_session(user_id: int) -> str | None:
             }
         ]
 
-    session = stripe.checkout.Session.create(
-        mode=mode,
+    return stripe.checkout.Session.create(
+        mode="subscription",
         line_items=line_items,
         success_url=success_url,
         cancel_url=cancel_url,
@@ -59,13 +80,35 @@ async def create_checkout_session(user_id: int) -> str | None:
         subscription_data={"metadata": {"user_id": str(user_id)}},
     )
 
+
+async def create_checkout_session(user_id: int) -> tuple[str | None, str | None]:
+    """Return (checkout_url, error_message)."""
+    if not stripe_configured():
+        if not STRIPE_SECRET_KEY:
+            return None, "Brak STRIPE_SECRET_KEY na serwerze."
+        if not PUBLIC_URL.startswith("https://"):
+            return None, "Brak PUBLIC_URL (https://...) na serwerze."
+        return None, "Stripe nie skonfigurowany."
+
+    try:
+        session = await asyncio.to_thread(_create_checkout_session_sync, user_id)
+    except stripe.error.StripeError as exc:
+        logger.exception("Stripe checkout failed user=%s: %s", user_id, exc)
+        msg = getattr(exc, "user_message", None) or str(exc)
+        return None, f"Stripe: {msg}"
+    except Exception as exc:
+        logger.exception("Checkout failed user=%s: %s", user_id, exc)
+        return None, "Błąd tworzenia płatności. Spróbuj później."
+
     await db.record_payment(
         user_id,
         PREMIUM_PRICE_GROSZE,
         stripe_session_id=session.id,
         status="pending",
     )
-    return session.url
+    if not session.url:
+        return None, "Stripe nie zwrócił linku płatności."
+    return session.url, None
 
 
 async def _activate_from_session(session: dict, bot: Bot | None) -> None:

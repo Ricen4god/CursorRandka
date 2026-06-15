@@ -19,7 +19,14 @@ def _parse_admin_id(raw: str | None) -> int:
 
 
 ADMIN_ID = _parse_admin_id(os.getenv("ADMIN_ID"))
-_db_path = os.getenv("DB_PATH", "database.db")
+
+_ON_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
+_db_path = os.getenv("DB_PATH", "").strip()
+if not _db_path:
+    _db_path = "/app/data/database.db" if _ON_RAILWAY else "database.db"
+elif _ON_RAILWAY and _db_path in ("database.db", "./database.db"):
+    # Ephemeral container path — use Railway volume mount instead.
+    _db_path = "/app/data/database.db"
 DB_PATH = str(BASE_DIR / _db_path) if not os.path.isabs(_db_path) else _db_path
 
 DAILY_LIKE_LIMIT = 50
@@ -33,10 +40,10 @@ PREMIUM_DAYS = 30
 DAILY_REWIND_LIMIT = 5
 DAILY_SUPERLIKE_LIMIT = 1
 
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
-PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
 WEBHOOK_PORT = int(os.getenv("PORT", "8080"))
 
 # After local city feed is exhausted, reset to local after this many hours

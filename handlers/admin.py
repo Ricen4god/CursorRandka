@@ -586,7 +586,13 @@ def register(dp: Dispatcher):
         days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
         user = await db.get_user(target_id)
         if not user:
-            await message.answer(f"❌ Пользователь {target_id} не найден.")
+            await message.answer(
+                f"❌ Пользователь {target_id} не найден в базе бота.\n\n"
+                "Premium можно выдать только после регистрации — "
+                "пусть человек напишет боту /start и пройдёт анкету.\n"
+                "Потом повторите: /givepremium "
+                f"{target_id} {days}"
+            )
             return
 
         until = await db.activate_premium(target_id, days)

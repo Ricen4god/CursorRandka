@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN mkdir -p /app/data
+
 RUN test -d seed_data \
     && test -f seed_data/genders.json \
     && test -f seed_data/photos.json \

@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import aiosqlite
 
@@ -115,6 +116,9 @@ async def _migrate_db(db):
 
 
 async def init_db():
+    db_file = Path(DB_PATH)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Database path: %s (exists=%s)", DB_PATH, db_file.is_file())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (

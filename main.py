@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
 import db
-from config import ADMIN_ID, BOT_TOKEN, PUBLIC_URL, WEBHOOK_PORT
+from config import ADMIN_ID, BOT_TOKEN, DB_PATH, PUBLIC_URL, WEBHOOK_PORT
 from handlers import admin, premium, profile, registration, start, swipe
 from keyboards import main_menu_kb
 from premium import is_premium_active, stripe_configured
@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-13-premium-v10"
+BUILD_VERSION = "2025-06-15-persist-v11"
 
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
@@ -116,11 +116,12 @@ async def main():
     await setup_bot_commands(bot)
 
     logger.info(
-        "CursorRandka bot started! build=%s admin_id=%s stripe=%s public_url=%s",
+        "CursorRandka bot started! build=%s admin_id=%s stripe=%s public_url=%s db=%s",
         BUILD_VERSION,
         ADMIN_ID or "not set",
         "yes" if stripe_configured() else "no",
         PUBLIC_URL or "not set",
+        DB_PATH,
     )
     seed_ok = SEED_DATA_DIR.is_dir() and PHOTOS_JSON.is_file() and GENDERS_JSON.is_file()
     if seed_ok:

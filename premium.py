@@ -10,12 +10,17 @@ from config import (
     PREMIUM_AGE_RANGE,
     PREMIUM_DAYS,
     PREMIUM_PRICE_PLN,
+    PUBLIC_URL,
     STRIPE_SECRET_KEY,
 )
 
 
 def stripe_configured() -> bool:
-    return bool(STRIPE_SECRET_KEY.strip())
+    return bool(
+        STRIPE_SECRET_KEY
+        and STRIPE_SECRET_KEY.startswith(("sk_live_", "sk_test_"))
+        and PUBLIC_URL.startswith("https://")
+    )
 
 
 def is_premium_active(user: dict | None) -> bool:

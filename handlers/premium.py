@@ -47,14 +47,18 @@ def register(dp: Dispatcher):
             )
             return
 
-        url = await create_checkout_session(callback.from_user.id)
-        if not url:
-            await callback.answer("Błąd płatności. Spróbuj później.", show_alert=True)
+        url, err = await create_checkout_session(callback.from_user.id)
+        if err or not url:
+            await callback.answer(
+                (err or "Błąd płatności.")[:200],
+                show_alert=True,
+            )
             return
 
         await callback.answer()
         await callback.message.answer(
             f"💳 Opłać Premium — <b>{PREMIUM_PRICE_PLN:.2f} zł / mies.</b>\n\n"
+            "👇 Kliknij <b>Zapłać teraz</b> — otworzy się strona Stripe.\n"
             "Po płatności wróć tutaj — Premium włączy się automatycznie.",
             parse_mode="HTML",
             reply_markup=premium_kb(False, True, checkout_url=url),
@@ -134,6 +138,8 @@ def register(dp: Dispatcher):
     async def cb_likers_hint(callback: CallbackQuery):
         await callback.answer()
         await callback.message.answer("Użyj przycisku 💖 Kto Cię polubił w menu głównym")
+
+    @dp.callback_query(F.data == "premium:rewind")
     async def cb_premium_rewind(callback: CallbackQuery):
         user_id = callback.from_user.id
         user = await db.get_user(user_id)
