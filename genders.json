@@ -1,0 +1,22 @@
+{
+  "1": {"gender": "M", "looking_for": "F", "name": "Michał", "age": 20},
+  "2": {"gender": "M", "looking_for": "F", "name": "Piotr", "age": 19},
+  "3": {"gender": "F", "looking_for": "M", "name": "Anna", "age": 21},
+  "4": {"gender": "M", "looking_for": "F", "name": "Jakub", "age": 22},
+  "5": {"gender": "M", "looking_for": "F", "name": "Tomek", "age": 18},
+  "6": {"gender": "M", "looking_for": "F", "name": "Mateusz", "age": 20},
+  "7": {"gender": "F", "looking_for": "M", "name": "Kasia", "age": 19},
+  "8": {"gender": "F", "looking_for": "M", "name": "Ola", "age": 21},
+  "9": {"gender": "F", "looking_for": "M", "name": "Marta", "age": 22},
+  "10": {"gender": "F", "looking_for": "M", "name": "Zuzanna", "age": 18},
+  "11": {"gender": "F", "looking_for": "M", "name": "Weronika", "age": 20},
+  "12": {"gender": "F", "looking_for": "M", "name": "Natalia", "age": 19},
+  "13": {"gender": "M", "looking_for": "F", "name": "Krzysztof", "age": 21},
+  "14": {"gender": "M", "looking_for": "F", "name": "Adam", "age": 18},
+  "15": {"gender": "F", "looking_for": "M", "name": "Julia", "age": 20},
+  "16": {"gender": "F", "looking_for": "M", "name": "Paulina", "age": 22},
+  "17": {"gender": "F", "looking_for": "M", "name": "Karolina", "age": 19},
+  "18": {"gender": "F", "looking_for": "M", "name": "Dominika", "age": 21},
+  "19": {"gender": "F", "looking_for": "M", "name": "Aleksandra", "age": 18},
+  "20": {"gender": "F", "looking_for": "M", "name": "Monika", "age": 20}
+}
