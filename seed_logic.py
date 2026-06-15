@@ -164,9 +164,9 @@ def build_test_users(
 ) -> list[dict]:
     """Build 20 profiles per city; each city gets all 20 photos exactly once.
 
-    Persona slots 1–20 supply name/gender/age from genders.json.
-    Photos are shuffled per city (deterministic by city name) so browsing
-    one city never shows the same photo twice; photos may repeat across cities.
+    Persona name/gender/age come from genders.json keyed by photo id (1–20).
+    Photos are shuffled per city so the same city never repeats a face twice;
+    gender always matches the photo (same key in genders.json and photos.json).
     """
     gender_map = genders or load_genders()
     photo_map = photos or load_photos()
@@ -177,13 +177,15 @@ def build_test_users(
         city_photo_ids: list[str] = []
 
         for slot in range(1, PERSONA_COUNT + 1):
-            persona_key = str(slot)
-            persona_data = gender_map[persona_key]
+            # Photo key defines persona (name/gender/age must match photo N in genders.json).
+            photo_key = shuffled_photo_keys[slot - 1]
+            persona_data = gender_map[photo_key]
             gender = persona_data["gender"]
             looking_for = persona_data["looking_for"]
             name = persona_data["name"]
             age = int(persona_data["age"])
-            photo_file_id = photo_map[shuffled_photo_keys[slot - 1]]
+            photo_file_id = photo_map[photo_key]
+            persona_index = int(photo_key)
             city_photo_ids.append(photo_file_id)
 
             user_id = persona_user_id(slot, city_index)
@@ -197,9 +199,9 @@ def build_test_users(
                     "looking_for": looking_for,
                     "city": city,
                     "search_city": city,
-                    "bio": _bio_for(gender, slot, city),
+                    "bio": _bio_for(gender, persona_index, city),
                     "photo_file_id": photo_file_id,
-                    "persona": slot,
+                    "persona": persona_index,
                 }
             )
 
