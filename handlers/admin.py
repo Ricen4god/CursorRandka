@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 
 import db
-from config import DB_PATH
+from config import DB_PATH, PREMIUM_ENABLED
 from seed_logic import (
     CITIES,
     PERSONA_COUNT,
@@ -577,6 +577,9 @@ def register(dp: Dispatcher):
     @dp.message(Command("givepremium"))
     @admin_only
     async def cmd_givepremium(message: Message, bot: Bot):
+        if not PREMIUM_ENABLED:
+            await message.answer("⭐ Premium wyłączone (PREMIUM_ENABLED=0).")
+            return
         parts = message.text.split()
         if len(parts) < 2 or not parts[1].isdigit():
             await message.answer("Использование: /givepremium <tg_id> [dni=30]")

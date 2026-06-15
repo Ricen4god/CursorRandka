@@ -29,6 +29,13 @@ elif _ON_RAILWAY and _db_path in ("database.db", "./database.db"):
     _db_path = "/app/data/database.db"
 DB_PATH = str(BASE_DIR / _db_path) if not os.path.isabs(_db_path) else _db_path
 
+PREMIUM_ENABLED = os.getenv("PREMIUM_ENABLED", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 DAILY_LIKE_LIMIT = 50
 MIN_AGE = 16
 AGE_RANGE = 2  # ±2 years for free users

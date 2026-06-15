@@ -1,31 +1,5 @@
 """Stripe Checkout + webhook for Premium subscriptions."""
 
-import logging
-
-import stripe
-from aiohttp import web
-from aiogram import Bot
-
-import db
-from config import (
-    PREMIUM_DAYS,
-    PREMIUM_PRICE_GROSZE,
-    PREMIUM_PRICE_PLN,
-    PUBLIC_URL,
-    STRIPE_PRICE_ID,
-    STRIPE_SECRET_KEY,
-    STRIPE_WEBHOOK_SECRET,
-)
-from premium import stripe_configured
-
-logger = logging.getLogger(__name__)
-
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
-
-
-"""Stripe Checkout + webhook for Premium subscriptions."""
-
 import asyncio
 import logging
 
@@ -78,6 +52,7 @@ def _create_checkout_session_sync(user_id: int) -> stripe.checkout.Session:
         client_reference_id=str(user_id),
         metadata={"user_id": str(user_id)},
         subscription_data={"metadata": {"user_id": str(user_id)}},
+        automatic_payment_methods={"enabled": True},
     )
 
 
@@ -222,6 +197,12 @@ async def pay_cancel_page(_request: web.Request) -> web.Response:
 
 async def health_check(_request: web.Request) -> web.Response:
     return web.Response(text="ok")
+
+
+def create_health_app() -> web.Application:
+    app = web.Application()
+    app.router.add_get("/health", health_check)
+    return app
 
 
 def create_webhook_app(bot: Bot) -> web.Application:

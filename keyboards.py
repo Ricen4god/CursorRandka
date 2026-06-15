@@ -6,16 +6,19 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 
+from config import PREMIUM_ENABLED
+
 
 def main_menu_kb(*, is_premium: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="🔎 Przeglądaj")],
         [KeyboardButton(text="👤 Mój profil"), KeyboardButton(text="💕 Sympatie")],
     ]
-    if is_premium:
+    if PREMIUM_ENABLED and is_premium:
         rows.append([KeyboardButton(text="💖 Kto Cię polubił")])
+    if PREMIUM_ENABLED:
+        rows.append([KeyboardButton(text="⭐ Premium")])
     rows += [
-        [KeyboardButton(text="⭐ Premium")],
         [KeyboardButton(text="💤 Uśpij"), KeyboardButton(text="⚙️ Ustawienia")],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -80,7 +83,7 @@ def swipe_kb(candidate_id: int, *, is_premium: bool = False) -> InlineKeyboardMa
             InlineKeyboardButton(text="❤️ Lubię", callback_data=f"like:{candidate_id}"),
         ],
     ]
-    if is_premium:
+    if PREMIUM_ENABLED and is_premium:
         rows.append(
             [
                 InlineKeyboardButton(
@@ -99,7 +102,7 @@ def swipe_kb(candidate_id: int, *, is_premium: bool = False) -> InlineKeyboardMa
             InlineKeyboardButton(text="⛔ Zablokuj", callback_data=f"block:{candidate_id}"),
         ],
     ]
-    if is_premium:
+    if PREMIUM_ENABLED and is_premium:
         rows.append(
             [InlineKeyboardButton(text="↩️ Cofnij ostatnie", callback_data="premium:rewind")]
         )

@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import CallbackQuery, Message
 
 import db
-from config import DAILY_LIKE_LIMIT, DAILY_REWIND_LIMIT, PREMIUM_PRICE_PLN
+from config import DAILY_LIKE_LIMIT, DAILY_REWIND_LIMIT, PREMIUM_ENABLED, PREMIUM_PRICE_PLN
 from keyboards import likers_kb, main_menu_kb, premium_kb
 from premium import PREMIUM_FEATURES_TEXT, is_premium_active, stripe_configured
 from stripe_pay import create_checkout_session
@@ -17,6 +17,9 @@ def _premium_status_line(user: dict) -> str:
 
 
 def register(dp: Dispatcher):
+    if not PREMIUM_ENABLED:
+        return
+
     @dp.message(F.text == "⭐ Premium")
     async def premium_menu(message: Message):
         user = await db.get_user(message.from_user.id)

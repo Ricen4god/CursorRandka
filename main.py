@@ -8,19 +8,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
 import db
-from config import ADMIN_ID, BOT_TOKEN, DB_PATH, PUBLIC_URL, WEBHOOK_PORT
-from handlers import admin, premium, profile, registration, start, swipe
+from config import ADMIN_ID, BOT_TOKEN, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
+from handlers import admin, profile, registration, start, swipe
 from keyboards import main_menu_kb
-from premium import is_premium_active, stripe_configured
+from premium import is_premium_active
 from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
 from states import AdminBroadcast, AdminSearch
-from stripe_pay import create_webhook_app
+from stripe_pay import create_health_app, create_webhook_app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-15-persist-v11"
+BUILD_VERSION = "2025-06-16-no-premium-v13"
 
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
@@ -59,7 +59,13 @@ def register_handlers(dp: Dispatcher) -> None:
     registration.register(dp)
     swipe.register(dp)
     profile.register(dp)
-    premium.register(dp)
+    if PREMIUM_ENABLED:
+        from handlers import premium
+
+        premium.register(dp)
+        logger.info("Premium handlers enabled")
+    else:
+        logger.info("Premium disabled (PREMIUM_ENABLED=0)")
 
     @dp.message(F.text, ~F.text.startswith("/"))
     async def unknown_text(message: Message, state: FSMContext):
@@ -116,10 +122,10 @@ async def main():
     await setup_bot_commands(bot)
 
     logger.info(
-        "CursorRandka bot started! build=%s admin_id=%s stripe=%s public_url=%s db=%s",
+        "CursorRandka bot started! build=%s admin_id=%s premium=%s public_url=%s db=%s",
         BUILD_VERSION,
         ADMIN_ID or "not set",
-        "yes" if stripe_configured() else "no",
+        "yes" if PREMIUM_ENABLED else "no",
         PUBLIC_URL or "not set",
         DB_PATH,
     )
@@ -139,7 +145,10 @@ async def main():
             GENDERS_JSON.is_file(),
             SEED_DATA_DIR,
         )
-    webhook_app = create_webhook_app(bot)
+    if PREMIUM_ENABLED:
+        webhook_app = create_webhook_app(bot)
+    else:
+        webhook_app = create_health_app()
     runner = web.AppRunner(webhook_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)

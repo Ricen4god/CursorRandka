@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 import db
 from db import user_search_city
-from config import FEED_RESET_HOURS
+from config import FEED_RESET_HOURS, PREMIUM_ENABLED
 from keyboards import main_menu_kb, report_reasons_kb, swipe_kb
 from premium import age_range_for, is_premium_active
 from states import DirectMessage, Report
@@ -198,7 +198,7 @@ def register(dp: Dispatcher):
                 )
                 hint = (
                     "\n\n⭐ Premium = nielimitowane polubienia!"
-                    if limit
+                    if limit and PREMIUM_ENABLED
                     else ""
                 )
                 await callback.answer(f"{msg}{hint}", show_alert=True)
