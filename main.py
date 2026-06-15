@@ -5,10 +5,11 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters import Command
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
 import db
-from config import ADMIN_ID, BOT_TOKEN, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
+from config import ADMIN_ID, BOT_TOKEN, BUILD_VERSION, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
 from handlers import admin, profile, registration, start, swipe
 from keyboards import main_menu_kb
 from premium import is_premium_active
@@ -19,19 +20,18 @@ from stripe_pay import create_health_app, create_webhook_app
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Bump when deploying — check Railway logs for this line after redeploy.
-BUILD_VERSION = "2025-06-16-seed-gender-fix-v14"
-
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Uruchom bota / Start"),
     BotCommand(command="help", description="Pomoc / Help"),
     BotCommand(command="myid", description="Twój Telegram ID / Ваш ID"),
+    BotCommand(command="version", description="Wersja bota / Версия"),
 ]
 
 ADMIN_COMMANDS = [
     BotCommand(command="admin", description="Panel admina"),
     BotCommand(command="seed_demo", description="Wgraj 300 profili demo"),
     BotCommand(command="seed_status", description="Ile profili demo w bazie"),
+    BotCommand(command="dbinfo", description="Status bazy / Volume"),
     BotCommand(command="stats", description="Statystyki bota"),
 ]
 
@@ -67,6 +67,18 @@ def register_handlers(dp: Dispatcher) -> None:
     else:
         logger.info("Premium disabled (PREMIUM_ENABLED=0)")
 
+    @dp.message(Command("version"))
+    async def cmd_version(message: Message):
+        info = await db.get_db_status()
+        persist = "✅ OK" if info["persistent_ok"] else "❌ слетит при Deploy"
+        await message.answer(
+            "CursorRandka\n"
+            f"Build: <code>{BUILD_VERSION}</code>\n"
+            f"DB: <code>{info['path']}</code>\n"
+            f"Persistence: {persist}",
+            parse_mode="HTML",
+        )
+
     @dp.message(F.text, ~F.text.startswith("/"))
     async def unknown_text(message: Message, state: FSMContext):
         current = await state.get_state()
@@ -97,14 +109,11 @@ def register_handlers(dp: Dispatcher) -> None:
             return
 
         cmd = (message.text or "").split()[0].split("@")[0].lower()
-        hint = ""
-        if cmd in ("/seed_demo", "/seed", "/seed_status", "/admin"):
-            hint = (
-                "\n\nJeśli jesteś adminem, sprawdź logi Railway: "
-                f"build={BUILD_VERSION}, ADMIN_ID."
-            )
         await message.answer(
-            f"Nieznana komenda: {cmd}{hint}\n\nWpisz /help"
+            f"Nieznana komenda: {cmd}\n"
+            f"Build na serwerze: <code>{BUILD_VERSION}</code>\n\n"
+            f"Wpisz /help lub /version",
+            parse_mode="HTML",
         )
 
 
