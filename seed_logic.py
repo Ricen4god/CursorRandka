@@ -251,8 +251,7 @@ def delete_all_test_users(conn: sqlite3.Connection) -> int:
     before = conn.execute(
         """SELECT COUNT(*) FROM users
            WHERE user_id BETWEEN ? AND ?
-              OR user_id BETWEEN ? AND ?
-              OR user_id >= 910000""",
+              OR user_id BETWEEN ? AND ?""",
         (OLD_TEST_ID_START, OLD_TEST_ID_END, TEST_ID_START, TEST_ID_END),
     ).fetchone()[0]
 
@@ -261,8 +260,7 @@ def delete_all_test_users(conn: sqlite3.Connection) -> int:
         for row in conn.execute(
             """SELECT user_id FROM users
                WHERE user_id BETWEEN ? AND ?
-                  OR user_id BETWEEN ? AND ?
-                  OR user_id >= 910000""",
+                  OR user_id BETWEEN ? AND ?""",
             (OLD_TEST_ID_START, OLD_TEST_ID_END, TEST_ID_START, TEST_ID_END),
         ).fetchall()
     ]

@@ -28,8 +28,7 @@ def main():
         after = conn.execute(
             """SELECT COUNT(*) FROM users
                WHERE user_id BETWEEN 900001 AND 900030
-                  OR user_id BETWEEN 910001 AND 910300
-                  OR user_id >= 910000"""
+                  OR user_id BETWEEN 910001 AND 910300"""
         ).fetchone()[0]
         print(f"Removed {removed} test users from {db_file.resolve()}")
         print(f"Remaining test users: {after}")
