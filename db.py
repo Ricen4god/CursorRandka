@@ -1,9 +1,11 @@
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import os
 
 import aiosqlite
 
+from cities import cities_equal, normalize_city_name
 from config import (
     ADMIN_ID,
     DB_PATH,
@@ -11,11 +13,29 @@ from config import (
     FEED_RESET_HOURS,
     MIN_AGE,
     PREMIUM_DAYS,
+    VOLUME_MOUNT_PATH,
+    _ON_RAILWAY,
     resolve_nearby_cities,
 )
 from premium import age_range_for, daily_like_limit_for, is_premium_active
 
 logger = logging.getLogger(__name__)
+
+
+def _data_dir_is_persistent(data_dir: Path) -> bool:
+    """True when DB folder survives redeploy (Railway Volume or local dev)."""
+    if not _ON_RAILWAY:
+        return True
+    if VOLUME_MOUNT_PATH:
+        return True
+    data_dir = data_dir.resolve()
+    try:
+        # Mounted volume has a different device id than parent (/app).
+        if os.stat(data_dir).st_dev != os.stat(data_dir.parent).st_dev:
+            return True
+    except OSError:
+        pass
+    return False
 
 
 async def _migrate_db(db):
@@ -118,7 +138,19 @@ async def _migrate_db(db):
 async def init_db():
     db_file = Path(DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Database path: %s (exists=%s)", DB_PATH, db_file.is_file())
+    parent_writable = os.access(db_file.parent, os.W_OK)
+    logger.info(
+        "Database path: %s (exists=%s writable_dir=%s volume=%s)",
+        DB_PATH,
+        db_file.is_file(),
+        parent_writable,
+        VOLUME_MOUNT_PATH or "none",
+    )
+    if _ON_RAILWAY and not _data_dir_is_persistent(db_file.parent):
+        logger.warning(
+            "Railway: /app/data is NOT a Volume mount — DB resets on every Deploy! "
+            "Ctrl+K → Volume → mount /app/data on CursorRandka → redeploy."
+        )
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
@@ -206,6 +238,29 @@ async def init_db():
         await db.commit()
 
 
+async def get_db_status() -> dict:
+    db_file = Path(DB_PATH)
+    real_users = 0
+    if db_file.is_file():
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM users WHERE user_id < 910000"
+            )
+            real_users = (await cur.fetchone())[0]
+    parent = db_file.parent
+    persisted = _data_dir_is_persistent(parent)
+    return {
+        "path": DB_PATH,
+        "exists": db_file.is_file(),
+        "size_bytes": db_file.stat().st_size if db_file.is_file() else 0,
+        "volume_mount": VOLUME_MOUNT_PATH or (str(parent) if persisted and _ON_RAILWAY else ""),
+        "on_railway": _ON_RAILWAY,
+        "writable": os.access(parent, os.W_OK) if parent.exists() else False,
+        "persistent_ok": persisted,
+        "real_users": real_users,
+    }
+
+
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID and ADMIN_ID != 0
 
@@ -256,7 +311,8 @@ async def get_user(user_id: int) -> dict | None:
 
 
 async def create_user(data: dict):
-    search_city = data.get("search_city") or data["city"]
+    city = normalize_city_name(data["city"])
+    search_city = normalize_city_name(data.get("search_city") or city)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO users
@@ -270,7 +326,7 @@ async def create_user(data: dict):
                 data["age"],
                 data["gender"],
                 data["looking_for"],
-                data["city"],
+                city,
                 None,
                 None,
                 "",
@@ -281,7 +337,7 @@ async def create_user(data: dict):
             ),
         )
         await db.commit()
-    await _refresh_searchers_after_new_city_user(data["city"])
+    await _refresh_searchers_after_new_city_user(city)
 
 
 async def _refresh_searchers_after_new_city_user(city: str):
@@ -314,6 +370,10 @@ async def _refresh_searchers_after_new_city_user(city: str):
 async def update_user(user_id: int, **fields):
     if not fields:
         return
+    if "city" in fields:
+        fields["city"] = normalize_city_name(fields["city"])
+    if "search_city" in fields:
+        fields["search_city"] = normalize_city_name(fields["search_city"])
     if "latitude" in fields or "longitude" in fields:
         fields.pop("latitude", None)
         fields.pop("longitude", None)
@@ -563,7 +623,7 @@ async def diagnose_candidates(user_id: int) -> dict:
         local_rows = [
             r
             for r in all_rows
-            if r["city"].strip().lower() == search_city.lower()
+            if cities_equal(r["city"], search_city)
         ]
         local_gender_ok = [r for r in local_rows if _gender_match(user, r)]
         local_unviewed = [r for r in local_gender_ok if r["user_id"] not in viewed_ids]

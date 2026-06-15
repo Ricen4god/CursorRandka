@@ -3,8 +3,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from cities import cities_equal, normalize_city_name
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+
+# Bump when deploying — check Railway logs or /version in bot.
+BUILD_VERSION = "2025-06-16-city-normalize-v17"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
@@ -20,14 +25,22 @@ def _parse_admin_id(raw: str | None) -> int:
 
 ADMIN_ID = _parse_admin_id(os.getenv("ADMIN_ID"))
 
-_ON_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
+_ON_RAILWAY = bool(
+    os.getenv("RAILWAY_ENVIRONMENT")
+    or os.getenv("RAILWAY_PROJECT_ID")
+    or os.getenv("RAILWAY_SERVICE_ID")
+)
+_volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip().rstrip("/")
 _db_path = os.getenv("DB_PATH", "").strip()
-if not _db_path:
+if _volume_mount:
+    # Railway sets this when a volume is attached to the service.
+    _db_path = f"{_volume_mount}/database.db"
+elif not _db_path:
     _db_path = "/app/data/database.db" if _ON_RAILWAY else "database.db"
 elif _ON_RAILWAY and _db_path in ("database.db", "./database.db"):
-    # Ephemeral container path — use Railway volume mount instead.
     _db_path = "/app/data/database.db"
 DB_PATH = str(BASE_DIR / _db_path) if not os.path.isabs(_db_path) else _db_path
+VOLUME_MOUNT_PATH = _volume_mount
 
 PREMIUM_ENABLED = os.getenv("PREMIUM_ENABLED", "0").strip().lower() in (
     "1",
@@ -78,12 +91,11 @@ NEARBY_CITIES: dict[str, list[str]] = {
 
 
 def resolve_nearby_cities(search_city: str) -> list[str]:
-    key = (search_city or "").strip()
+    key = normalize_city_name(search_city)
     if not key:
         return []
-    lower = key.lower()
     for city, nearby in NEARBY_CITIES.items():
-        if city.lower() == lower:
+        if cities_equal(city, key):
             return nearby
     return []
 
