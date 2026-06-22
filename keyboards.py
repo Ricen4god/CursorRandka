@@ -132,6 +132,19 @@ def premium_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def like_alert_kb(liker_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👀 Pokaż kto polubił",
+                    callback_data=f"liker_reveal:{liker_id}",
+                ),
+            ],
+        ]
+    )
+
+
 def like_notification_kb(liker_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

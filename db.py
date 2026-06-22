@@ -819,6 +819,28 @@ async def activate_premium(user_id: int, days: int = PREMIUM_DAYS) -> str:
     return new_until
 
 
+async def has_incoming_like(recipient_id: int, liker_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM likes WHERE from_user_id = ? AND to_user_id = ?",
+            (liker_id, recipient_id),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def get_like_message(liker_id: int, recipient_id: int) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT message FROM likes WHERE from_user_id = ? AND to_user_id = ?",
+            (liker_id, recipient_id),
+        ) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            msg = row[0]
+            return msg if msg else None
+
+
 async def get_likers(user_id: int) -> list[dict]:
     """Users who liked me but no mutual match yet and I haven't liked them."""
     async with aiosqlite.connect(DB_PATH) as db:

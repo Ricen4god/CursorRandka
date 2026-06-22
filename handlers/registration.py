@@ -44,6 +44,7 @@ def register(dp: Dispatcher):
         await state.set_state(Registration.city)
         await message.answer(
             "W jakim mieście mieszkasz? 🏙️\n"
+            "(Wielkość liter nie ma znaczenia — np. opole = Opole)\n"
             "(To Twoje miasto — możesz później szukać osób w innym mieście w ustawieniach)",
         )
 
@@ -94,20 +95,36 @@ def register(dp: Dispatcher):
         photo_id = message.photo[-1].file_id
         data = await state.get_data()
 
-        await db.create_user(
-            {
-                "user_id": message.from_user.id,
-                "username": message.from_user.username,
-                "age": data["age"],
-                "gender": data["gender"],
-                "looking_for": data["looking_for"],
-                "city": data["city"],
-                "search_city": data["city"],
-                "name": data["name"],
-                "bio": data["bio"],
-                "photo_file_id": photo_id,
-            }
-        )
+        try:
+            await db.create_user(
+                {
+                    "user_id": message.from_user.id,
+                    "username": message.from_user.username,
+                    "age": data["age"],
+                    "gender": data["gender"],
+                    "looking_for": data["looking_for"],
+                    "city": data["city"],
+                    "search_city": data["city"],
+                    "name": data["name"],
+                    "bio": data["bio"],
+                    "photo_file_id": photo_id,
+                }
+            )
+        except Exception as exc:
+            existing = await db.get_user(message.from_user.id)
+            if existing:
+                await state.clear()
+                await message.answer(
+                    f"Masz już profil, {existing['name']}! 💕",
+                    reply_markup=main_menu_kb(),
+                )
+                return
+            await message.answer(
+                "❌ Nie udało się zapisać profilu. Spróbuj ponownie za chwilę.\n"
+                f"(Błąd: {type(exc).__name__})"
+            )
+            return
+
         await state.clear()
 
         await message.answer_photo(

@@ -1,4 +1,6 @@
 import asyncio
+import html
+import logging
 import time
 
 from aiogram import Bot, Dispatcher, F
@@ -8,14 +10,16 @@ from aiogram.types import CallbackQuery, Message
 import db
 from db import user_search_city
 from config import FEED_RESET_HOURS, PREMIUM_ENABLED
-from keyboards import like_notification_kb, main_menu_kb, report_reasons_kb, swipe_kb
+from keyboards import like_alert_kb, like_notification_kb, main_menu_kb, report_reasons_kb, swipe_kb
 from premium import age_range_for, is_premium_active
 from states import DirectMessage, Report
-from utils import contact_link, format_match_text, format_profile
+from utils import contact_link, format_match_text, format_profile, format_profile_html
 
 SWIPE_COOLDOWN_SEC = 2.0
 CARD_DELAY_SEC = 0.8
 COOLDOWN_MSG = "Zwolnij 😅 Poczekaj chwilę"
+
+logger = logging.getLogger(__name__)
 
 _user_locks: dict[int, asyncio.Lock] = {}
 _last_swipe_at: dict[int, float] = {}
@@ -123,31 +127,62 @@ async def _notify_match(bot: Bot, user_id: int, partner: dict):
 
 
 async def _notify_like(bot: Bot, recipient_id: int, liker: dict, *, intro: str | None = None):
-    """Tell user someone liked them — show profile + like/skip buttons."""
+    """Tell user someone liked them — teaser first, profile after reveal button."""
     if not liker or recipient_id == liker["user_id"]:
         return
-    header = intro or "💖 <b>Ktoś Cię polubił!</b>\n\n"
-    caption = f"{header}{format_profile(liker)}\n\nCo chcesz zrobić?"
+    header = intro or "💖 <b>Ktoś polubił Twoją ankietę!</b>\n\n"
+    text = f"{header}Kliknij przycisk, żeby zobaczyć profil tej osoby."
+    kb = like_alert_kb(liker["user_id"])
+    try:
+        await bot.send_message(
+            recipient_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        logger.warning("Like notify failed for %s: %s", recipient_id, exc)
+        try:
+            await bot.send_message(
+                recipient_id,
+                "💖 Ktoś polubił Twoją ankietę! Kliknij przycisk poniżej.",
+                reply_markup=kb,
+            )
+        except Exception as exc2:
+            logger.warning("Like notify fallback failed for %s: %s", recipient_id, exc2)
+
+
+async def _show_liker_profile(
+    message: Message,
+    liker: dict,
+    *,
+    intro: str | None = None,
+) -> None:
+    header = intro or ""
+    caption = f"{header}{format_profile_html(liker)}\n\nCo chcesz zrobić?"
     kb = like_notification_kb(liker["user_id"])
     photo_id = (liker.get("photo_file_id") or "").strip()
     try:
         if photo_id:
-            await bot.send_photo(
-                recipient_id,
+            await message.answer_photo(
                 photo_id,
                 caption=caption,
                 parse_mode="HTML",
                 reply_markup=kb,
             )
         else:
-            await bot.send_message(
-                recipient_id,
+            await message.answer(
                 caption,
                 parse_mode="HTML",
                 reply_markup=kb,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Show liker profile failed: %s", exc)
+        plain = f"{header}{format_profile(liker)}\n\nCo chcesz zrobić?"
+        if photo_id:
+            await message.answer_photo(photo_id, caption=plain, reply_markup=kb)
+        else:
+            await message.answer(plain, reply_markup=kb)
 
 
 async def _like_back(user_id: int, candidate_id: int, bot: Bot) -> tuple[bool, str | None]:
@@ -355,6 +390,32 @@ def register(dp: Dispatcher):
             "(Anuluj: wyślij /cancel)"
         )
 
+    @dp.callback_query(F.data.startswith("liker_reveal:"))
+    async def cb_liker_reveal(callback: CallbackQuery):
+        user_id = callback.from_user.id
+        liker_id = int(callback.data.split(":")[1])
+
+        if not await db.has_incoming_like(user_id, liker_id):
+            await callback.answer("To polubienie już nie jest dostępne", show_alert=True)
+            return
+
+        liker = await db.get_user(liker_id)
+        if not liker or liker["is_banned"]:
+            await callback.answer("Profil niedostępny", show_alert=True)
+            return
+
+        intro = None
+        like_msg = await db.get_like_message(liker_id, user_id)
+        if like_msg:
+            intro = f"✉️ <b>Wiadomość:</b> «{html.escape(like_msg)}»\n\n"
+
+        await callback.answer()
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _show_liker_profile(callback.message, liker, intro=intro)
+
     @dp.callback_query(F.data.startswith("liker_like:"))
     async def cb_liker_like(callback: CallbackQuery, bot: Bot):
         user_id = callback.from_user.id
@@ -443,7 +504,7 @@ def register(dp: Dispatcher):
                     bot,
                     candidate_id,
                     me,
-                    intro=f"✉️ <b>Ktoś napisał do Ciebie!</b>\n\n💬 «{text}»\n\n",
+                    intro=f"✉️ <b>Ktoś napisał do Ciebie!</b>\n\n💬 «{html.escape(text)}»\n\n",
                 )
             except Exception:
                 pass

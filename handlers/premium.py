@@ -97,46 +97,6 @@ def register(dp: Dispatcher):
             reply_markup=likers_kb(likers),
         )
 
-    @dp.callback_query(F.data.startswith("liker_like:"))
-    async def cb_liker_like(callback: CallbackQuery, bot: Bot):
-        user_id = callback.from_user.id
-        user = await db.get_user(user_id)
-        if not is_premium_active(user):
-            await callback.answer("Tylko Premium ⭐", show_alert=True)
-            return
-
-        candidate_id = int(callback.data.split(":")[1])
-        allowed, limit = await db.can_like_today(user_id)
-        if not allowed:
-            await callback.answer(
-                f"Limit {limit} polubień na dziś!",
-                show_alert=True,
-            )
-            return
-
-        ok = await db.increment_daily_likes(user_id)
-        if not ok:
-            await callback.answer("Limit polubień wyczerpany!", show_alert=True)
-            return
-
-        matched = await db.add_like(user_id, candidate_id)
-        if matched:
-            partner = await db.get_user(candidate_id)
-            me = await db.get_user(user_id)
-            from handlers.swipe import _notify_match
-
-            await callback.answer("💥 Match!")
-            await _notify_match(bot, user_id, partner)
-            await _notify_match(bot, candidate_id, me)
-        else:
-            await callback.answer("❤️ Polubiono!")
-
-        likers = await db.get_likers(user_id)
-        if likers:
-            await callback.message.edit_reply_markup(reply_markup=likers_kb(likers))
-        else:
-            await callback.message.edit_text("Wszystkie polubienia obsłużone! 💕")
-
     @dp.callback_query(F.data == "premium:likers_hint")
     async def cb_likers_hint(callback: CallbackQuery):
         await callback.answer()

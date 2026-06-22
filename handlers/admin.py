@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 
 import db
-from config import DB_PATH, PREMIUM_ENABLED
+from config import BUILD_VERSION, DB_PATH, PREMIUM_ENABLED
 from seed_logic import (
     CITIES,
     PERSONA_COUNT,
@@ -503,6 +503,30 @@ def register(dp: Dispatcher):
         except Exception as exc:
             logger.exception("seed_status failed")
             await message.answer(f"❌ Ошибка /seed_status: {exc}\nDB: {DB_PATH}")
+
+    @dp.message(Command("dbinfo"))
+    @admin_only_command
+    async def cmd_dbinfo(message: Message):
+        try:
+            info = await db.get_db_status()
+            persist = "✅ Volume OK" if info["persistent_ok"] else "❌ БД слетит при Deploy!"
+            size_kb = info["size_bytes"] // 1024
+            vol = info["volume_mount"] or "brak (нет Volume!)"
+            await message.answer(
+                "🗄 <b>Baza danych / Database</b>\n\n"
+                f"Build: <code>{BUILD_VERSION}</code>\n"
+                f"Path: <code>{info['path']}</code>\n"
+                f"Plik istnieje: {'tak' if info['exists'] else 'nie'} ({size_kb} KB)\n"
+                f"Volume mount: <code>{vol}</code>\n"
+                f"Zapis do folderu: {'tak' if info['writable'] else 'NIE'}\n"
+                f"Użytkownicy (real): {info['real_users']}\n"
+                f"Persistence: {persist}\n\n"
+                "Jeśli «brak» — Ctrl+K → Volume → /app/data → redeploy.\n"
+                "Wyłącz też lokalny start.bat (ten sam BOT_TOKEN).",
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            await message.answer(f"❌ dbinfo: {exc}\nDB_PATH={DB_PATH}")
 
     @dp.message(Command("admin"))
     @admin_only_command

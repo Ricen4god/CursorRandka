@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import db
-from config import ADMIN_ID, DISCLAIMER, MIN_AGE, PREMIUM_ENABLED, PREMIUM_PRICE_PLN
+from config import ADMIN_ID, BUILD_VERSION, DISCLAIMER, MIN_AGE, PREMIUM_ENABLED, PREMIUM_PRICE_PLN
 from keyboards import main_menu_kb, remove_kb
 from premium import is_premium_active
 from states import AdminBroadcast, AdminSearch, Registration
@@ -70,6 +70,18 @@ def register(dp: Dispatcher):
         user = await db.get_user(message.from_user.id)
         kb = main_menu_kb() if user else None
         await message.answer("Anulowano ✖️", reply_markup=kb)
+
+    @dp.message(Command("version"))
+    async def cmd_version(message: Message):
+        info = await db.get_db_status()
+        persist = "✅ OK" if info["persistent_ok"] else "❌ слетит при Deploy"
+        await message.answer(
+            f"CursorRandka\n"
+            f"Build: <code>{BUILD_VERSION}</code>\n"
+            f"DB: <code>{info['path']}</code>\n"
+            f"Persistence: {persist}",
+            parse_mode="HTML",
+        )
 
     @dp.message(Command("help"))
     async def cmd_help(message: Message):

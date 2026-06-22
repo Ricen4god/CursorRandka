@@ -3,6 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import db
+from cities import cities_equal, normalize_city_name
 from db import user_search_city
 from keyboards import blocked_list_kb, main_menu_kb, profile_menu_kb, settings_kb
 from premium import is_premium_active
@@ -81,7 +82,7 @@ def register(dp: Dispatcher):
         await state.set_state(ProfileEdit.city)
         await message.answer(
             f"🏙️ Moje miasto (obecnie: {user['city']})\n\n"
-            "Podaj miasto, w którym mieszkasz:\nAnuluj: /cancel"
+            "Podaj miasto (wielkość liter nie ma znaczenia):\nAnuluj: /cancel"
         )
 
     @dp.message(F.text == "🏙️ Moje miasto")
@@ -95,7 +96,7 @@ def register(dp: Dispatcher):
         await state.set_state(ProfileEdit.city)
         await message.answer(
             f"🏙️ Moje miasto (obecnie: {user['city']})\n\n"
-            "Podaj miasto, w którym mieszkasz:\nAnuluj: /cancel"
+            "Podaj miasto (wielkość liter nie ma znaczenia):\nAnuluj: /cancel"
         )
 
     @dp.message(ProfileEdit.city)
@@ -109,7 +110,7 @@ def register(dp: Dispatcher):
             await message.answer("Anulowano", reply_markup=return_kb)
             return
 
-        city = (message.text or "").strip()
+        city = normalize_city_name((message.text or "").strip())
         if len(city) < 2:
             await message.answer("Podaj prawdziwą nazwę miasta")
             return
@@ -119,7 +120,7 @@ def register(dp: Dispatcher):
         if user:
             old_search = (user.get("search_city") or user.get("city") or "").strip()
             old_city = (user.get("city") or "").strip()
-            if old_search.lower() == old_city.lower():
+            if cities_equal(old_search, old_city):
                 updates["search_city"] = city
 
         await db.update_user(message.from_user.id, **updates)
@@ -138,6 +139,7 @@ def register(dp: Dispatcher):
         await message.answer(
             f"🔍 Szukam w (obecnie: {current})\n\n"
             "W jakim mieście chcesz przeglądać profile?\n"
+            "Wielkość liter nie ma znaczenia (opole = Opole).\n"
             "Np. mieszkasz w Opolu, a szukasz osób we Wrocławiu — wpisz «Wrocław».\n"
             "Anuluj: /cancel"
         )
@@ -149,7 +151,7 @@ def register(dp: Dispatcher):
             await message.answer("Anulowano", reply_markup=settings_kb())
             return
 
-        search_city = (message.text or "").strip()
+        search_city = normalize_city_name((message.text or "").strip())
         if len(search_city) < 2:
             await message.answer("Podaj prawdziwą nazwę miasta")
             return

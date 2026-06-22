@@ -1,4 +1,6 @@
 import asyncio
+import html
+import logging
 import time
 
 from aiogram import Bot, Dispatcher, F
@@ -8,14 +10,16 @@ from aiogram.types import CallbackQuery, Message
 import db
 from db import user_search_city
 from config import FEED_RESET_HOURS, PREMIUM_ENABLED
-from keyboards import main_menu_kb, report_reasons_kb, swipe_kb
+from keyboards import like_alert_kb, like_notification_kb, main_menu_kb, report_reasons_kb, swipe_kb
 from premium import age_range_for, is_premium_active
 from states import DirectMessage, Report
-from utils import contact_link, format_match_text, format_profile
+from utils import contact_link, format_match_text, format_profile, format_profile_html
 
 SWIPE_COOLDOWN_SEC = 2.0
 CARD_DELAY_SEC = 0.8
 COOLDOWN_MSG = "Zwolnij 😅 Poczekaj chwilę"
+
+logger = logging.getLogger(__name__)
 
 _user_locks: dict[int, asyncio.Lock] = {}
 _last_swipe_at: dict[int, float] = {}
@@ -122,6 +126,86 @@ async def _notify_match(bot: Bot, user_id: int, partner: dict):
         await bot.send_message(user_id, text, reply_markup=main_menu_kb())
 
 
+async def _notify_like(bot: Bot, recipient_id: int, liker: dict, *, intro: str | None = None):
+    """Tell user someone liked them — teaser first, profile after reveal button."""
+    if not liker or recipient_id == liker["user_id"]:
+        return
+    header = intro or "💖 <b>Ktoś polubił Twoją ankietę!</b>\n\n"
+    text = f"{header}Kliknij przycisk, żeby zobaczyć profil tej osoby."
+    kb = like_alert_kb(liker["user_id"])
+    try:
+        await bot.send_message(
+            recipient_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        logger.warning("Like notify failed for %s: %s", recipient_id, exc)
+        try:
+            await bot.send_message(
+                recipient_id,
+                "💖 Ktoś polubił Twoją ankietę! Kliknij przycisk poniżej.",
+                reply_markup=kb,
+            )
+        except Exception as exc2:
+            logger.warning("Like notify fallback failed for %s: %s", recipient_id, exc2)
+
+
+async def _show_liker_profile(
+    message: Message,
+    liker: dict,
+    *,
+    intro: str | None = None,
+) -> None:
+    header = intro or ""
+    caption = f"{header}{format_profile_html(liker)}\n\nCo chcesz zrobić?"
+    kb = like_notification_kb(liker["user_id"])
+    photo_id = (liker.get("photo_file_id") or "").strip()
+    try:
+        if photo_id:
+            await message.answer_photo(
+                photo_id,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        else:
+            await message.answer(
+                caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+    except Exception as exc:
+        logger.warning("Show liker profile failed: %s", exc)
+        plain = f"{header}{format_profile(liker)}\n\nCo chcesz zrobić?"
+        if photo_id:
+            await message.answer_photo(photo_id, caption=plain, reply_markup=kb)
+        else:
+            await message.answer(plain, reply_markup=kb)
+
+
+async def _like_back(user_id: int, candidate_id: int, bot: Bot) -> tuple[bool, str | None]:
+    """Like someone from a notification. Returns (matched, error_msg)."""
+    allowed, limit = await db.can_like_today(user_id)
+    if not allowed:
+        msg = f"Limit {limit} polubień na dziś!" if limit else "Limit polubień na dziś!"
+        return False, msg
+
+    if not await db.increment_daily_likes(user_id):
+        return False, "Limit polubień na dziś wyczerpany!"
+
+    matched = await db.add_like(user_id, candidate_id)
+    if matched:
+        partner = await db.get_user(candidate_id)
+        me = await db.get_user(user_id)
+        if partner:
+            await _notify_match(bot, user_id, partner)
+        if me:
+            await _notify_match(bot, candidate_id, me)
+    return matched, None
+
+
 def register(dp: Dispatcher):
     @dp.message(F.text == "🔎 Przeglądaj")
     async def browse(message: Message, state: FSMContext):
@@ -220,6 +304,11 @@ def register(dp: Dispatcher):
                 await _notify_match(bot, user_id, partner)
                 await _notify_match(bot, candidate_id, me)
             else:
+                me = await db.get_user(user_id)
+                if me:
+                    recipient = await db.get_user(candidate_id)
+                    if recipient:
+                        await _notify_like(bot, candidate_id, me)
                 await _safe_delete(callback.message)
                 await _show_candidate(callback.message, user_id, delay=True)
 
@@ -272,19 +361,14 @@ def register(dp: Dispatcher):
 
             me = await db.get_user(user_id)
             if me and not matched:
-                try:
-                    await bot.send_photo(
+                recipient = await db.get_user(candidate_id)
+                if recipient:
+                    await _notify_like(
+                        bot,
                         candidate_id,
-                        me["photo_file_id"],
-                        caption=(
-                            "⭐ <b>Super polubienie!</b> Ktoś naprawdę Cię lubi!\n\n"
-                            f"{me['name']}, {me['age']} lat · {me['city']}\n\n"
-                            "Wejdź w 🔎 Przeglądaj!"
-                        ),
-                        parse_mode="HTML",
+                        me,
+                        intro="⭐ <b>Super polubienie!</b> Ktoś naprawdę Cię lubi!\n\n",
                     )
-                except Exception:
-                    pass
 
             if matched:
                 partner = await db.get_user(candidate_id)
@@ -294,6 +378,8 @@ def register(dp: Dispatcher):
             else:
                 await _safe_delete(callback.message)
                 await _show_candidate(callback.message, user_id, delay=True)
+
+    @dp.callback_query(F.data.startswith("write:"))
     async def cb_write(callback: CallbackQuery, state: FSMContext):
         candidate_id = int(callback.data.split(":")[1])
         await state.set_state(DirectMessage.waiting_message)
@@ -303,6 +389,84 @@ def register(dp: Dispatcher):
             "Napisz wiadomość — trafi do tej osoby przed matchem! ✉️\n"
             "(Anuluj: wyślij /cancel)"
         )
+
+    @dp.callback_query(F.data.startswith("liker_reveal:"))
+    async def cb_liker_reveal(callback: CallbackQuery):
+        user_id = callback.from_user.id
+        liker_id = int(callback.data.split(":")[1])
+
+        if not await db.has_incoming_like(user_id, liker_id):
+            await callback.answer("To polubienie już nie jest dostępne", show_alert=True)
+            return
+
+        liker = await db.get_user(liker_id)
+        if not liker or liker["is_banned"]:
+            await callback.answer("Profil niedostępny", show_alert=True)
+            return
+
+        intro = None
+        like_msg = await db.get_like_message(liker_id, user_id)
+        if like_msg:
+            intro = f"✉️ <b>Wiadomość:</b> «{html.escape(like_msg)}»\n\n"
+
+        await callback.answer()
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _show_liker_profile(callback.message, liker, intro=intro)
+
+    @dp.callback_query(F.data.startswith("liker_like:"))
+    async def cb_liker_like(callback: CallbackQuery, bot: Bot):
+        user_id = callback.from_user.id
+        candidate_id = int(callback.data.split(":")[1])
+        matched, err = await _like_back(user_id, candidate_id, bot)
+        if err:
+            await callback.answer(err, show_alert=True)
+            return
+        if matched:
+            await callback.answer("💥 Match!")
+            try:
+                await callback.message.edit_caption(
+                    caption="💕 Macie wzajemną sympatię!",
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await callback.message.edit_text("💕 Macie wzajemną sympatię!")
+                except Exception:
+                    pass
+        else:
+            await callback.answer("❤️ Polubiono!")
+            try:
+                await callback.message.edit_caption(
+                    caption=callback.message.caption + "\n\n✅ Odpowiedziałeś/aś polubieniem!",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
+    @dp.callback_query(F.data.startswith("liker_skip:"))
+    async def cb_liker_skip(callback: CallbackQuery):
+        user_id = callback.from_user.id
+        liker_id = int(callback.data.split(":")[1])
+        await db.record_skip(user_id, liker_id)
+        await callback.answer("Pominięto")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data.startswith("liker_block:"))
+    async def cb_liker_block(callback: CallbackQuery):
+        user_id = callback.from_user.id
+        liker_id = int(callback.data.split(":")[1])
+        await db.block_user(user_id, liker_id)
+        await callback.answer("Zablokowano ⛔")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
 
     @dp.message(DirectMessage.waiting_message)
     async def direct_message_text(message: Message, state: FSMContext, bot: Bot):
@@ -334,19 +498,16 @@ def register(dp: Dispatcher):
         await state.clear()
 
         me = await db.get_user(message.from_user.id)
-        try:
-            await bot.send_photo(
-                candidate_id,
-                me["photo_file_id"],
-                caption=(
-                    f"✉️ Ktoś napisał do Ciebie!\n\n"
-                    f"{me['name']}, {me['age']} lat · {me['city']}\n\n"
-                    f"💬 «{text}»\n\n"
-                    "Wejdź w 🔎 Przeglądaj, żeby odpowiedzieć!"
-                ),
-            )
-        except Exception:
-            pass
+        if me:
+            try:
+                await _notify_like(
+                    bot,
+                    candidate_id,
+                    me,
+                    intro=f"✉️ <b>Ktoś napisał do Ciebie!</b>\n\n💬 «{html.escape(text)}»\n\n",
+                )
+            except Exception:
+                pass
 
         if matched:
             partner = await db.get_user(candidate_id)
