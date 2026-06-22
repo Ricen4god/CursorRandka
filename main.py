@@ -8,6 +8,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, Message
 
+import premium as premium_helpers
+
+if not getattr(premium_helpers, "PREMIUM_HELPERS_MODULE", False):
+    raise SystemExit(
+        "Błędny plik premium.py! To musi być moduł pomocniczy w katalogu głównym. "
+        "Handlery Premium są w handlers/premium_menu.py."
+    )
+
 import db
 from config import ADMIN_ID, BOT_TOKEN, BUILD_VERSION, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
 from handlers import admin, profile, registration, start, swipe
@@ -60,9 +68,9 @@ def register_handlers(dp: Dispatcher) -> None:
     swipe.register(dp)
     profile.register(dp)
     if PREMIUM_ENABLED:
-        from handlers import premium
+        from handlers import premium_menu
 
-        premium.register(dp)
+        premium_menu.register(dp)
         logger.info("Premium handlers enabled")
     else:
         logger.info("Premium disabled (PREMIUM_ENABLED=0)")
