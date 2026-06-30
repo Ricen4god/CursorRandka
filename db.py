@@ -21,6 +21,8 @@ from premium import age_range_for, daily_like_limit_for, is_premium_active
 
 logger = logging.getLogger(__name__)
 
+_admin_cache: set[int] = set()
+
 
 def _data_dir_is_persistent(data_dir: Path) -> bool:
     """True when DB folder survives redeploy (Railway Volume or local dev)."""
@@ -134,6 +136,19 @@ async def _migrate_db(db):
         )
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS bot_admins (
+            user_id INTEGER PRIMARY KEY,
+            granted_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    if ADMIN_ID:
+        await db.execute(
+            "INSERT OR IGNORE INTO bot_admins (user_id, granted_by) VALUES (?, NULL)",
+            (ADMIN_ID,),
+        )
+
 
 async def init_db():
     db_file = Path(DB_PATH)
@@ -236,6 +251,39 @@ async def init_db():
         """)
         await _migrate_db(db)
         await db.commit()
+    await load_admins()
+
+
+async def load_admins() -> None:
+    """Reload admin IDs from DB + ADMIN_ID into memory cache."""
+    global _admin_cache
+    ids: set[int] = set()
+    if ADMIN_ID:
+        ids.add(ADMIN_ID)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM bot_admins") as cur:
+            rows = await cur.fetchall()
+            ids.update(row[0] for row in rows)
+    _admin_cache = ids
+    logger.info("Admins loaded: %s", sorted(_admin_cache))
+
+
+def get_all_admin_ids() -> list[int]:
+    return sorted(_admin_cache)
+
+
+async def grant_admin(target_id: int, granted_by: int) -> bool:
+    """Grant admin rights. Returns False if already admin."""
+    if is_admin(target_id):
+        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO bot_admins (user_id, granted_by) VALUES (?, ?)",
+            (target_id, granted_by),
+        )
+        await db.commit()
+    _admin_cache.add(target_id)
+    return True
 
 
 async def get_db_status() -> dict:
@@ -262,7 +310,9 @@ async def get_db_status() -> dict:
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID and ADMIN_ID != 0
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return True
+    return user_id in _admin_cache
 
 
 def user_search_city(user: dict) -> str:

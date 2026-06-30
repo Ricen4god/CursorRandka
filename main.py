@@ -37,6 +37,7 @@ DEFAULT_COMMANDS = [
 
 ADMIN_COMMANDS = [
     BotCommand(command="admin", description="Panel admina"),
+    BotCommand(command="giveadmin", description="Daj admina / Выдать админа"),
     BotCommand(command="seed_demo", description="Wgraj 300 profili demo"),
     BotCommand(command="seed_status", description="Ile profili demo w bazie"),
     BotCommand(command="dbinfo", description="Status bazy / Volume"),
@@ -46,19 +47,19 @@ ADMIN_COMMANDS = [
 
 async def setup_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(DEFAULT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
-    if ADMIN_ID:
+    for admin_id in db.get_all_admin_ids():
         await bot.set_my_commands(
             DEFAULT_COMMANDS + ADMIN_COMMANDS,
-            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+            scope=BotCommandScopeChat(chat_id=admin_id),
         )
-        logger.info("Admin command menu set for ADMIN_ID=%s", ADMIN_ID)
+    logger.info("Admin command menu set for %s admin(s)", len(db.get_all_admin_ids()))
 
 
 def register_handlers(dp: Dispatcher) -> None:
     """Register handlers. Admin commands FIRST; catch-all skips /commands."""
     admin.register(dp)
     logger.info(
-        "Admin handlers registered: /admin /seed_demo /seed_status /stats /myid "
+        "Admin handlers registered: /admin /giveadmin /seed_demo /seed_status /stats /myid "
         "(aliases: seed demo, /seed demo) (build %s)",
         BUILD_VERSION,
     )
