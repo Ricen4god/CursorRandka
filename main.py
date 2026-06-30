@@ -19,7 +19,6 @@ if not getattr(premium_helpers, "PREMIUM_HELPERS_MODULE", False):
 import db
 from config import ADMIN_ID, BOT_TOKEN, BUILD_VERSION, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
 from handlers import admin, profile, registration, start, swipe
-from handlers.admin import run_giveadmin
 from keyboards import main_menu_kb
 from premium import is_premium_active
 from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
@@ -67,7 +66,64 @@ def register_handlers(dp: Dispatcher) -> None:
 
     @dp.message(Command("giveadmin"))
     async def cmd_giveadmin(message: Message, bot: Bot):
-        await run_giveadmin(message, bot)
+        if not db.is_admin(message.from_user.id):
+            await message.answer(
+                f"🚫 Доступ запрещён. Ваш ID: {message.from_user.id}\n"
+                "Отправьте /myid — проверьте ADMIN_ID в Railway Variables."
+            )
+            return
+
+        parts = (message.text or "").split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer(
+                "Использование: /giveadmin <tg_id>\n\n"
+                "Пример: /giveadmin 806213828\n"
+                "ID: /myid или @userinfobot"
+            )
+            return
+
+        target_id = int(parts[1])
+        if target_id == message.from_user.id:
+            await message.answer("❌ У вас уже есть админка.")
+            return
+
+        if db.is_admin(target_id):
+            user = await db.get_user(target_id)
+            name = user["name"] if user else str(target_id)
+            await message.answer(f"ℹ️ {target_id} ({name}) уже админ.")
+            return
+
+        if not hasattr(db, "grant_admin"):
+            await message.answer("❌ Обновите db.py на сервере (нет grant_admin).")
+            return
+
+        ok = await db.grant_admin(target_id, message.from_user.id)
+        if not ok:
+            await message.answer("❌ Не удалось выдать админку.")
+            return
+
+        await db.log_admin_action(message.from_user.id, "giveadmin", target_id)
+        user = await db.get_user(target_id)
+        name = user["name"] if user else "—"
+
+        await setup_bot_commands(bot)
+
+        await message.answer(
+            f"✅ Админка выдана: <code>{target_id}</code> ({name}).\n"
+            f"Всего админов: {len(db.get_all_admin_ids())}",
+            parse_mode="HTML",
+        )
+
+        try:
+            await bot.send_message(
+                target_id,
+                "🛡️ Вам выданы права администратора CursorRandka.\n"
+                "Команды: /admin /stats /ban /giveadmin",
+            )
+        except Exception:
+            await message.answer(
+                "⚠️ Админка сохранена. Пользователь должен сначала нажать /start."
+            )
 
     start.register(dp)
     registration.register(dp)
