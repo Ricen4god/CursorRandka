@@ -9,7 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 # Bump when deploying — check Railway logs or /version in bot.
-BUILD_VERSION = "2025-06-22-like-reveal-v22"
+BUILD_VERSION = "2025-06-22-giveadmin-v24"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
