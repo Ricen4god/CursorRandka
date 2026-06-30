@@ -111,6 +111,63 @@ async def _log(admin_id: int, action: str, target_id: int | None = None, details
     await db.log_admin_action(admin_id, action, target_id, details)
 
 
+async def run_giveadmin(message: Message, bot: Bot) -> None:
+    """Выдать админку — вызывается из main.py (Command giveadmin)."""
+    if not is_admin(message.from_user.id):
+        await _deny_not_admin(message)
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer(
+            "Использование: /giveadmin <tg_id>\n\n"
+            "Пример: /giveadmin 123456789\n"
+            "ID: /myid или @userinfobot"
+        )
+        return
+
+    target_id = int(parts[1])
+    if target_id == message.from_user.id:
+        await message.answer("❌ У вас уже есть админка.")
+        return
+
+    if is_admin(target_id):
+        user = await db.get_user(target_id)
+        name = user["name"] if user else str(target_id)
+        await message.answer(f"ℹ️ {target_id} ({name}) уже админ.")
+        return
+
+    ok = await db.grant_admin(target_id, message.from_user.id)
+    if not ok:
+        await message.answer("❌ Не удалось выдать админку.")
+        return
+
+    await _log(message.from_user.id, "giveadmin", target_id)
+    user = await db.get_user(target_id)
+    name = user["name"] if user else "—"
+
+    from main import setup_bot_commands
+
+    await setup_bot_commands(bot)
+
+    await message.answer(
+        f"✅ Админка выдана: <code>{target_id}</code> ({name}).\n"
+        f"Всего админов: {len(db.get_all_admin_ids())}",
+        parse_mode="HTML",
+    )
+
+    try:
+        await bot.send_message(
+            target_id,
+            "🛡️ Вам выданы права администратора CursorRandka.\n"
+            "Команды: /admin /stats /ban /giveadmin",
+        )
+    except Exception:
+        await message.answer(
+            "⚠️ Админка сохранена. Пользователь должен сначала нажать /start в боте."
+        )
+
+
 def _dashboard_kb(pending_reports: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -549,60 +606,6 @@ def register(dp: Dispatcher):
             reply_markup=kb,
             parse_mode="HTML",
         )
-
-    @dp.message(Command("giveadmin"))
-    @admin_only
-    async def cmd_giveadmin(message: Message, bot: Bot):
-        parts = message.text.split()
-        if len(parts) < 2 or not parts[1].isdigit():
-            await message.answer(
-                "Использование: /giveadmin <tg_id>\n\n"
-                "Пример: /giveadmin 123456789\n"
-                "ID можно узнать через /myid или @userinfobot"
-            )
-            return
-
-        target_id = int(parts[1])
-        if target_id == message.from_user.id:
-            await message.answer("❌ Нельзя выдать админку самому себе — она у вас уже есть.")
-            return
-
-        if db.is_admin(target_id):
-            user = await db.get_user(target_id)
-            name = user["name"] if user else str(target_id)
-            await message.answer(f"ℹ️ Пользователь {target_id} ({name}) уже админ.")
-            return
-
-        ok = await db.grant_admin(target_id, message.from_user.id)
-        if not ok:
-            await message.answer("❌ Не удалось выдать админку.")
-            return
-
-        await _log(message.from_user.id, "giveadmin", target_id)
-        user = await db.get_user(target_id)
-        name = user["name"] if user else "—"
-
-        from main import setup_bot_commands
-
-        await setup_bot_commands(bot)
-
-        await message.answer(
-            f"✅ Админка выдана пользователю <code>{target_id}</code> ({name}).\n"
-            f"Всего админов: {len(db.get_all_admin_ids())}",
-            parse_mode="HTML",
-        )
-
-        try:
-            await bot.send_message(
-                target_id,
-                "🛡️ Вам выданы права администратора CursorRandka.\n"
-                "Команды: /admin /stats /ban /giveadmin и др.",
-            )
-        except Exception:
-            await message.answer(
-                "⚠️ Админка сохранена, но не удалось написать пользователю — "
-                "пусть сначала нажмёт /start в боте."
-            )
 
     @dp.message(Command("ban"))
     @admin_only

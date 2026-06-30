@@ -19,6 +19,7 @@ if not getattr(premium_helpers, "PREMIUM_HELPERS_MODULE", False):
 import db
 from config import ADMIN_ID, BOT_TOKEN, BUILD_VERSION, DB_PATH, PREMIUM_ENABLED, PUBLIC_URL, WEBHOOK_PORT
 from handlers import admin, profile, registration, start, swipe
+from handlers.admin import run_giveadmin
 from keyboards import main_menu_kb
 from premium import is_premium_active
 from seed_logic import GENDERS_JSON, PHOTOS_JSON, SEED_DATA_DIR
@@ -63,6 +64,10 @@ def register_handlers(dp: Dispatcher) -> None:
         "(aliases: seed demo, /seed demo) (build %s)",
         BUILD_VERSION,
     )
+
+    @dp.message(Command("giveadmin"))
+    async def cmd_giveadmin(message: Message, bot: Bot):
+        await run_giveadmin(message, bot)
 
     start.register(dp)
     registration.register(dp)
